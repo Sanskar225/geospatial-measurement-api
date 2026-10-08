@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aereo Geospatial Intelligence & Measurement Engine</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    #map { height: 480px; border-radius: 0.75rem; }
+    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+  
+  <!-- Navbar -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-xl shadow-lg shadow-cyan-500/20">
+          A
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            Aereo Geospatial Engine
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 font-mono font-medium">v1.0 Production</span>
+          </h1>
+          <p class="text-xs text-slate-400">Enterprise Shapefile & KML Metric Measurement Service</p>
+        </div>
+      </div>
+      <div class="flex items-center space-x-4">
+        <a href="/docs" target="_blank" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition font-medium border border-slate-700">
+          Swagger OpenAPI
+        </a>
+        <a href="/redoc" target="_blank" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition font-medium border border-slate-700">
+          ReDoc
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- Upload & File Info Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      
+      <!-- Upload Card -->
+      <div class="lg:col-span-1 glass-card p-6 rounded-2xl shadow-xl flex flex-col justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-white mb-2 flex items-center gap-2">
+            <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Upload Geospatial File
+          </h2>
+          <p class="text-xs text-slate-400 mb-4">Accepts <code>.zip</code> (Shapefile) or <code>.kml</code> with automatic CRS metric projection (UTM).</p>
+          
+          <div id="dropzone" class="border-2 border-dashed border-slate-700 hover:border-cyan-500/60 rounded-xl p-6 text-center cursor-pointer transition bg-slate-900/50">
+            <input type="file" id="fileInput" class="hidden" accept=".zip,.kml" />
+            <svg class="w-10 h-10 mx-auto text-slate-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <p class="text-xs font-medium text-slate-300">Click or drag & drop file here</p>
+            <p class="text-[11px] text-slate-500 mt-1">.zip (Shapefile) or .kml (Max 50MB)</p>
+          </div>
+        </div>
+
+        <div id="uploadStatus" class="mt-4 hidden">
+          <div class="flex items-center space-x-2 text-xs text-cyan-400">
+            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
+            <span>Processing geospatial data & projecting CRS...</span>
+          </div>
+        </div>
+
+        <!-- Preloaded Samples -->
+        <div class="mt-6 pt-4 border-t border-slate-800">
+          <p class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Try Built-in Samples</p>
+          <div class="flex gap-2">
+            <button onclick="loadSample('kml')" class="flex-1 py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg border border-slate-700 transition">
+              Sample KML
+            </button>
+            <button onclick="loadSample('shp')" class="flex-1 py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg border border-slate-700 transition">
+              Sample Shapefile
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- File Summary Card -->
+      <div class="lg:col-span-2 glass-card p-6 rounded-2xl shadow-xl flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+              Processed Dataset Metadata
+            </h2>
+            <span id="badgeStatus" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-mono">No File Selected</span>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+            <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+              <span class="text-[11px] text-slate-400 block">File ID</span>
+              <span id="metaId" class="text-sm font-mono font-semibold text-white">-</span>
+            </div>
+            <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+              <span class="text-[11px] text-slate-400 block">Input CRS</span>
+              <span id="metaCrs" class="text-sm font-semibold text-cyan-400">-</span>
+            </div>
+            <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+              <span class="text-[11px] text-slate-400 block">Total Features</span>
+              <span id="metaFeatures" class="text-sm font-bold text-white">-</span>
+            </div>
+            <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+              <span class="text-[11px] text-slate-400 block">Polygons / Lines</span>
+              <span id="metaBreakdown" class="text-sm font-semibold text-slate-200">-</span>
+            </div>
+          </div>
+
+          <!-- Total Measurements Highlight -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="p-4 bg-gradient-to-br from-emerald-950/40 to-slate-900 border border-emerald-500/20 rounded-xl">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-emerald-400 font-medium">Total Measured Area (Polygons)</span>
+                <span class="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">UTM Projected</span>
+              </div>
+              <p id="statTotalArea" class="text-xl font-extrabold text-white mt-1">0.00 m²</p>
+              <p id="statTotalAreaAlt" class="text-xs text-emerald-300/80 mt-0.5">0.0000 hectares</p>
+            </div>
+            <div class="p-4 bg-gradient-to-br from-blue-950/40 to-slate-900 border border-blue-500/20 rounded-xl">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-blue-400 font-medium">Total Measured Length (LineStrings)</span>
+                <span class="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">UTM Projected</span>
+              </div>
+              <p id="statTotalLength" class="text-xl font-extrabold text-white mt-1">0.00 m</p>
+              <p id="statTotalLengthAlt" class="text-xs text-blue-300/80 mt-0.5">0.0000 km</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center text-xs text-slate-400">
+          <span id="metaFilename">Filename: None</span>
+          <a id="rawJsonLink" href="#" target="_blank" class="text-cyan-400 hover:underline hidden">View Raw JSON</a>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Map Section -->
+    <div class="glass-card p-6 rounded-2xl shadow-xl">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+          Interactive Geospatial Visualization (Aereo Viewer)
+        </h2>
+        <span class="text-xs text-slate-400">Click features to view computed area and length</span>
+      </div>
+      <div id="map"></div>
+    </div>
+
+    <!-- Feature Measurements Table -->
+    <div class="glass-card p-6 rounded-2xl shadow-xl">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+          <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          Extracted Features & Measurements Table
+        </h2>
+        <div class="text-xs text-slate-400">
+          Showing <span id="tableCount" class="font-bold text-white">0</span> features
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs text-slate-300">
+          <thead class="bg-slate-900/80 uppercase font-semibold text-slate-400 border-b border-slate-800">
+            <tr>
+              <th class="px-4 py-3">ID / Name</th>
+              <th class="px-4 py-3">Geometry</th>
+              <th class="px-4 py-3">Projected CRS</th>
+              <th class="px-4 py-3">Measurement</th>
+              <th class="px-4 py-3">Formatted Value</th>
+              <th class="px-4 py-3">Status</th>
+            </tr>
+          </thead>
+          <tbody id="featuresTableBody" class="divide-y divide-slate-800 font-mono">
+            <tr>
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500 font-sans">
+                No features uploaded yet. Upload a .kml or Shapefile .zip to inspect.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Leaflet & Script Logic -->
+  <script>
+    // Initialize Map centered on India (default)
+    const map = L.map('map').setView([20.5937, 78.9629], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let geoJsonLayerGroup = L.layerGroup().addTo(map);
+
+    // Dropzone elements
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('border-cyan-400'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('border-cyan-400'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('border-cyan-400');
+      if (e.dataTransfer.files.length > 0) {
+        uploadFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) {
+        uploadFile(fileInput.files[0]);
+      }
+    });
+
+    async function uploadFile(file) {
+      const statusDiv = document.getElementById('uploadStatus');
+      statusDiv.classList.remove('hidden');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/files/', { method: 'POST', body: formData });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Upload Error: ' + (err.detail || 'Failed to process file'));
+          return;
+        }
+        const fileInfo = await res.json();
+        await fetchAndRenderMeasurements(fileInfo.id);
+      } catch (e) {
+        alert('Network or server error: ' + e.message);
+      } finally {
+        statusDiv.classList.add('hidden');
+      }
+    }
+
+    async function fetchAndRenderMeasurements(fileId) {
+      const res = await fetch(`/api/files/${fileId}/measurements/`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      // Update Metadata Card
+      document.getElementById('metaId').innerText = data.id;
+      document.getElementById('metaCrs').innerText = data.crs;
+      document.getElementById('metaFeatures').innerText = data.summary.total_features;
+      document.getElementById('metaBreakdown').innerText = `${data.summary.polygon_count} Poly / ${data.summary.linestring_count} Line / ${data.summary.point_count} Point`;
+      document.getElementById('metaFilename').innerText = 'Filename: ' + data.filename;
+      
+      const badge = document.getElementById('badgeStatus');
+      badge.innerText = 'COMPLETED';
+      badge.className = 'text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-mono font-medium';
+
+      // Summary Stats
+      document.getElementById('statTotalArea').innerText = Number(data.summary.total_area_sq_meters).toLocaleString() + ' m²';
+      document.getElementById('statTotalAreaAlt').innerText = Number(data.summary.total_area_hectares).toLocaleString() + ' hectares';
+      document.getElementById('statTotalLength').innerText = Number(data.summary.total_length_meters).toLocaleString() + ' m';
+      document.getElementById('statTotalLengthAlt').innerText = Number(data.summary.total_length_kilometers).toLocaleString() + ' km';
+
+      const jsonLink = document.getElementById('rawJsonLink');
+      jsonLink.href = `/api/files/${data.id}/measurements/`;
+      jsonLink.classList.remove('hidden');
+
+      // Clear previous map layers
+      geoJsonLayerGroup.clearLayers();
+
+      // Render Features on Map
+      const geoJsonData = {
+        type: 'FeatureCollection',
+        features: data.features.map(f => ({
+          type: 'Feature',
+          geometry: f.geometry,
+          properties: {
+            ...f.properties,
+            feature_id: f.feature_id,
+            geometry_type: f.geometry_type,
+            formatted_measurement: f.measurement ? f.measurement.formatted : 'N/A',
+            projected_crs: f.projected_crs || 'N/A'
+          }
+        }))
+      };
+
+      const layer = L.geoJSON(geoJsonData, {
+        style: function(feat) {
+          if (feat.geometry.type.includes('Polygon')) {
+            return { color: '#10b981', weight: 2, fillOpacity: 0.35, fillColor: '#10b981' };
+          } else {
+            return { color: '#38bdf8', weight: 4 };
+          }
+        },
+        pointToLayer: function(feat, latlng) {
+          return L.circleMarker(latlng, { radius: 6, color: '#f59e0b', fillOpacity: 0.8 });
+        },
+        onEachFeature: function(feat, l) {
+          l.bindPopup(`
+            <div style="font-family: sans-serif; color: #0f172a;">
+              <b style="color: #0284c7;">Feature:</b> ${feat.properties.feature_id}<br/>
+              <b>Type:</b> ${feat.properties.geometry_type}<br/>
+              <b>Measurement:</b> <span style="font-weight: 700; color: #059669;">${feat.properties.formatted_measurement}</span><br/>
+              <b>Projection:</b> <span style="font-size: 11px;">${feat.properties.projected_crs}</span>
+            </div>
+          `);
+        }
+      });
+
+      geoJsonLayerGroup.addLayer(layer);
+      try {
+        map.fitBounds(layer.getBounds(), { padding: [50, 50] });
+      } catch (e) {}
+
+      // Populate Table
+      const tbody = document.getElementById('featuresTableBody');
+      tbody.innerHTML = '';
+      document.getElementById('tableCount').innerText = data.features.length;
+
+      data.features.forEach(f => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-900/60 transition';
+
+        let badgeTypeColor = 'bg-slate-800 text-slate-300';
+        if (f.geometry_type.includes('Polygon')) badgeTypeColor = 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+        else if (f.geometry_type.includes('Line')) badgeTypeColor = 'bg-blue-950 text-blue-400 border border-blue-800';
+        else if (f.geometry_type.includes('Point')) badgeTypeColor = 'bg-amber-950 text-amber-400 border border-amber-800';
+
+        tr.innerHTML = `
+          <td class="px-4 py-3 font-medium text-white">${f.feature_id}</td>
+          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${f.geometry_type}</span></td>
+          <td class="px-4 py-3 text-slate-400 text-[11px]">${f.projected_crs || 'N/A'}</td>
+          <td class="px-4 py-3 text-slate-300">${f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE'}</td>
+          <td class="px-4 py-3 text-emerald-400 font-bold">${f.measurement ? (f.measurement.formatted || 'N/A') : 'N/A'}</td>
+          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[10px] ${f.status === 'SUCCESS' ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}">${f.status}</span></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadSample(type) {
+      const url = type === 'kml' ? '/sample_data/survey_sample.kml' : '/sample_data/sample_shapefile.zip';
+      try {
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const file = new File([blob], type === 'kml' ? 'survey_sample.kml' : 'sample_shapefile.zip');
+        uploadFile(file);
+      } catch (err) {
+        alert('Failed to load sample: ' + err.message);
+      }
+    }
+  </script>
+</body>
+</html>

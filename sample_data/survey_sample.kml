@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Aereo Bengaluru Drone Survey Mission</name>
+    <description>Drone orthomosaic survey boundary, flight path, and ground control points</description>
+    
+    <!-- Polygon: Solar Plant / Survey Site Boundary -->
+    <Placemark>
+      <name>Solar Plant Sector A</name>
+      <description>Perimeter boundary for solar farm site</description>
+      <ExtendedData>
+        <Data name="Project">
+          <value>Aereo CleanEnergy Phase 1</value>
+        </Data>
+        <Data name="SurveyDate">
+          <value>2026-10-08</value>
+        </Data>
+      </ExtendedData>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.5850,12.9700,0
+              77.5950,12.9700,0
+              77.5950,12.9800,0
+              77.5850,12.9800,0
+              77.5850,12.9700,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+
+    <!-- LineString: Power Line / Road Corridor Alignment -->
+    <Placemark>
+      <name>Transmission Line Corridor</name>
+      <description>High voltage transmission line survey corridor</description>
+      <ExtendedData>
+        <Data name="Voltage">
+          <value>66kV</value>
+        </Data>
+      </ExtendedData>
+      <LineString>
+        <coordinates>
+          77.5800,12.9650,0
+          77.5860,12.9720,0
+          77.5920,12.9780,0
+          77.6000,12.9850,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+
+    <!-- Point: Ground Control Point (GCP) -->
+    <Placemark>
+      <name>GCP Base Station #1</name>
+      <description>RTK Base station location</description>
+      <Point>
+        <coordinates>77.5900,12.9750,920.5</coordinates>
+      </Point>
+    </Placemark>
+
+    <!-- Polygon with an Interior Hole (Quarry Ring) -->
+    <Placemark>
+      <name>Mining Pit Exclusion Zone</name>
+      <description>Mining pit buffer with interior extraction hole</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.6000,12.9600,0
+              77.6150,12.9600,0
+              77.6150,12.9750,0
+              77.6000,12.9750,0
+              77.6000,12.9600,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+        <innerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.6040,12.9640,0
+              77.6100,12.9640,0
+              77.6100,12.9700,0
+              77.6040,12.9700,0
+              77.6040,12.9640,0
+            </coordinates>
+          </LinearRing>
+        </innerBoundaryIs>
+      </Polygon>
+    </Placemark>
+
+  </Document>
+</kml>
