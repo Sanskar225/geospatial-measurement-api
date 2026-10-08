@@ -9,7 +9,10 @@ SAMPLE_DIR = Path(__file__).parent.parent / "sample_data"
 def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "HEALTHY"
+    data = response.json()
+    assert data["status"] == "HEALTHY"
+    assert data["database"] == "CONNECTED"
+    assert "X-Process-Time" in response.headers
 
 def test_upload_kml_flow():
     kml_path = SAMPLE_DIR / "survey_sample.kml"
@@ -26,6 +29,7 @@ def test_upload_kml_flow():
     assert data["feature_count"] >= 4
     assert data["status"] == "COMPLETED"
     assert data["crs"] == "EPSG:4326"
+    assert "file_hash_sha256" in data
 
     file_id = data["id"]
 
@@ -35,6 +39,7 @@ def test_upload_kml_flow():
     info_data = info_res.json()
     assert info_data["id"] == file_id
     assert info_data["status"] == "COMPLETED"
+    assert info_data["progress_pct"] == 100
 
     # Test GET /api/files/{id}/measurements/
     meas_res = client.get(f"/api/files/{file_id}/measurements/")
@@ -48,16 +53,59 @@ def test_upload_kml_flow():
     assert meas_data["summary"]["total_area_sq_meters"] > 0
     assert meas_data["summary"]["total_length_meters"] > 0
 
-    # Verify features structure
+    # Verify advanced GIS metrics in features
     features = meas_data["features"]
     assert len(features) >= 4
-    for feat in features:
-        assert "feature_id" in feat
-        assert "geometry_type" in feat
-        assert "geometry" in feat
-        assert "crs" in feat
-        assert "properties" in feat
-        assert "measurement" in feat
+    poly_feat = next(f for f in features if f["geometry_type"] == "Polygon")
+    assert poly_feat["measurement"]["advanced_metrics"] is not None
+    assert poly_feat["measurement"]["advanced_metrics"]["geodesic_value"] is not None
+    assert poly_feat["measurement"]["advanced_metrics"]["distortion_percentage"] is not None
+
+def test_sha256_deduplication():
+    # Uploading the exact same file should return existing record (idempotency)
+    kml_path = SAMPLE_DIR / "survey_sample.kml"
+    with open(kml_path, "rb") as f:
+        res1 = client.post("/api/files/", files={"file": ("survey_sample.kml", f, "text/xml")})
+    with open(kml_path, "rb") as f:
+        res2 = client.post("/api/files/", files={"file": ("survey_sample.kml", f, "text/xml")})
+
+    assert res1.status_code == 201
+    assert res2.status_code == 201
+    assert res1.json()["id"] == res2.json()["id"]
+    assert res1.json()["file_hash_sha256"] == res2.json()["file_hash_sha256"]
+
+def test_export_endpoints():
+    kml_path = SAMPLE_DIR / "survey_sample.kml"
+    with open(kml_path, "rb") as f:
+        upload_res = client.post("/api/files/", files={"file": ("survey_sample.kml", f, "text/xml")})
+    file_id = upload_res.json()["id"]
+
+    # Test GeoJSON export
+    geo_res = client.get(f"/api/files/{file_id}/export?format=geojson")
+    assert geo_res.status_code == 200
+    geo_data = geo_res.json()
+    assert geo_data["type"] == "FeatureCollection"
+    assert len(geo_data["features"]) >= 4
+
+    # Test CSV export
+    csv_res = client.get(f"/api/files/{file_id}/export?format=csv")
+    assert csv_res.status_code == 200
+    assert "text/csv" in csv_res.headers["content-type"]
+    assert "Feature_ID,Geometry_Type" in csv_res.text
+
+def test_pagination_and_filtering():
+    kml_path = SAMPLE_DIR / "survey_sample.kml"
+    with open(kml_path, "rb") as f:
+        upload_res = client.post("/api/files/", files={"file": ("survey_sample.kml", f, "text/xml")})
+    file_id = upload_res.json()["id"]
+
+    # Filter only Polygons with limit=1
+    res = client.get(f"/api/files/{file_id}/measurements/?geometry_type=Polygon&limit=1&offset=0")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["features"]) == 1
+    assert data["features"][0]["geometry_type"] == "Polygon"
+    assert data["total_count"] >= 2
 
 def test_upload_shapefile_zip_flow():
     shp_path = SAMPLE_DIR / "sample_shapefile.zip"

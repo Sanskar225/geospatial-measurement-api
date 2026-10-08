@@ -105,37 +105,20 @@ class CRSService:
         Calculates exact geodesic area over WGS84 ellipsoid directly from geographic coordinates.
         Used for verification and comparison against planar projected measurements.
         """
-        if geom.geom_type == "Polygon":
-            lons, lats = geom.exterior.coords.xy
-            area, _ = self.wgs84_geod.polygon_area_perimeter(lons, lats)
-            total_area = abs(area)
-            # Subtract interior rings (holes)
-            for interior in geom.interiors:
-                in_lons, in_lats = interior.coords.xy
-                hole_area, _ = self.wgs84_geod.polygon_area_perimeter(in_lons, in_lats)
-                total_area -= abs(hole_area)
-            return total_area
-        elif geom.geom_type == "MultiPolygon":
-            return sum(self.calculate_geodesic_polygon_area(p) for p in geom.geoms)
-        return 0.0
+        try:
+            area, _ = self.wgs84_geod.geometry_area_perimeter(geom)
+            return abs(float(area))
+        except Exception:
+            return 0.0
 
     def calculate_geodesic_linestring_length(self, geom: BaseGeometry) -> float:
         """
         Calculates exact geodesic length over WGS84 ellipsoid.
         """
-        if geom.geom_type == "LineString":
-            lons, lats = geom.coords.xy
-            _, _, length = self.wgs84_geod.inv_intermediate(lons[:-1], lats[:-1], lons[1:], lats[1:])
-            # Or direct line length
-            total_length = 0.0
-            coords = list(geom.coords)
-            for i in range(len(coords) - 1):
-                p1, p2 = coords[i], coords[i+1]
-                _, _, dist = self.wgs84_geod.inv(p1[0], p1[1], p2[0], p2[1])
-                total_length += dist
-            return total_length
-        elif geom.geom_type == "MultiLineString":
-            return sum(self.calculate_geodesic_linestring_length(line) for line in geom.geoms)
-        return 0.0
+        try:
+            length = self.wgs84_geod.geometry_length(geom)
+            return float(length)
+        except Exception:
+            return 0.0
 
 crs_service = CRSService()

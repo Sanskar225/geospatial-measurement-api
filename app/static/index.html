@@ -10,14 +10,14 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    #map { height: 480px; border-radius: 0.75rem; }
-    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    #map { height: 500px; border-radius: 0.75rem; }
+    .glass-card { background: rgba(30, 41, 59, 0.75); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
   
   <!-- Navbar -->
-  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
       <div class="flex items-center space-x-3">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-xl shadow-lg shadow-cyan-500/20">
@@ -25,13 +25,13 @@
         </div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-            Aereo Geospatial Engine
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 font-mono font-medium">v1.0 Production</span>
+            Aereo Cloud Geospatial Engine
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 font-mono font-medium">Enterprise v2.0</span>
           </h1>
-          <p class="text-xs text-slate-400">Enterprise Shapefile & KML Metric Measurement Service</p>
+          <p class="text-xs text-slate-400">Drone Vector Measurement, Dynamic UTM Projection & Geodesic Verification</p>
         </div>
       </div>
-      <div class="flex items-center space-x-4">
+      <div class="flex items-center space-x-3">
         <a href="/docs" target="_blank" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition font-medium border border-slate-700">
           Swagger OpenAPI
         </a>
@@ -55,7 +55,7 @@
             <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
             Upload Geospatial File
           </h2>
-          <p class="text-xs text-slate-400 mb-4">Accepts <code>.zip</code> (Shapefile) or <code>.kml</code> with automatic CRS metric projection (UTM).</p>
+          <p class="text-xs text-slate-400 mb-4">Accepts <code>.zip</code> (Shapefile) or <code>.kml</code> with SHA-256 deduplication and dynamic UTM projection.</p>
           
           <div id="dropzone" class="border-2 border-dashed border-slate-700 hover:border-cyan-500/60 rounded-xl p-6 text-center cursor-pointer transition bg-slate-900/50">
             <input type="file" id="fileInput" class="hidden" accept=".zip,.kml" />
@@ -68,7 +68,7 @@
         <div id="uploadStatus" class="mt-4 hidden">
           <div class="flex items-center space-x-2 text-xs text-cyan-400">
             <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
-            <span>Processing geospatial data & projecting CRS...</span>
+            <span id="uploadStatusText">Processing geospatial dataset...</span>
           </div>
         </div>
 
@@ -92,7 +92,7 @@
           <div class="flex items-center justify-between mb-4">
             <h2 class="text-base font-semibold text-white flex items-center gap-2">
               <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-              Processed Dataset Metadata
+              Dataset Telemetry & Measurements
             </h2>
             <span id="badgeStatus" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-mono">No File Selected</span>
           </div>
@@ -137,35 +137,52 @@
           </div>
         </div>
 
-        <div class="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center text-xs text-slate-400">
+        <!-- Export Actions Row -->
+        <div class="mt-4 pt-3 border-t border-slate-800 flex flex-wrap justify-between items-center text-xs text-slate-400 gap-2">
           <span id="metaFilename">Filename: None</span>
-          <a id="rawJsonLink" href="#" target="_blank" class="text-cyan-400 hover:underline hidden">View Raw JSON</a>
+          <div class="flex gap-2">
+            <a id="btnExportGeoJson" href="#" target="_blank" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 transition hidden">
+              Export GeoJSON
+            </a>
+            <a id="btnExportCsv" href="#" target="_blank" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 transition hidden">
+              Export CSV
+            </a>
+          </div>
         </div>
       </div>
 
     </div>
 
-    <!-- Map Section -->
+    <!-- Map Section with Satellite Toggle -->
     <div class="glass-card p-6 rounded-2xl shadow-xl">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex flex-wrap items-center justify-between mb-4 gap-2">
         <h2 class="text-base font-semibold text-white flex items-center gap-2">
           <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-          Interactive Geospatial Visualization (Aereo Viewer)
+          Aereo Spatial Visualization & Orthomosaic Viewer
         </h2>
-        <span class="text-xs text-slate-400">Click features to view computed area and length</span>
+        <!-- Basemap Selector -->
+        <div class="flex items-center space-x-2 text-xs bg-slate-900 p-1 rounded-lg border border-slate-800">
+          <button id="btnOsm" onclick="setBaseMap('osm')" class="px-2.5 py-1 rounded bg-cyan-600 text-white font-medium">Street Map</button>
+          <button id="btnSatellite" onclick="setBaseMap('sat')" class="px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium">Drone Satellite</button>
+        </div>
       </div>
       <div id="map"></div>
     </div>
 
     <!-- Feature Measurements Table -->
     <div class="glass-card p-6 rounded-2xl shadow-xl">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex flex-wrap items-center justify-between mb-4 gap-2">
         <h2 class="text-base font-semibold text-white flex items-center gap-2">
           <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-          Extracted Features & Measurements Table
+          Extracted Features, Projection Metrics & Geodesic Verification
         </h2>
-        <div class="text-xs text-slate-400">
-          Showing <span id="tableCount" class="font-bold text-white">0</span> features
+        
+        <!-- Filter Tabs -->
+        <div class="flex gap-1 text-xs">
+          <button onclick="filterTable('all')" class="filter-btn px-2.5 py-1 rounded bg-slate-800 text-white font-medium active">All</button>
+          <button onclick="filterTable('Polygon')" class="filter-btn px-2.5 py-1 rounded bg-slate-900 text-slate-400 hover:text-white font-medium">Polygons</button>
+          <button onclick="filterTable('LineString')" class="filter-btn px-2.5 py-1 rounded bg-slate-900 text-slate-400 hover:text-white font-medium">Lines</button>
+          <button onclick="filterTable('Point')" class="filter-btn px-2.5 py-1 rounded bg-slate-900 text-slate-400 hover:text-white font-medium">Points</button>
         </div>
       </div>
 
@@ -177,13 +194,15 @@
               <th class="px-4 py-3">Geometry</th>
               <th class="px-4 py-3">Projected CRS</th>
               <th class="px-4 py-3">Measurement</th>
-              <th class="px-4 py-3">Formatted Value</th>
+              <th class="px-4 py-3">Planar Metric</th>
+              <th class="px-4 py-3">Geodesic (WGS84)</th>
+              <th class="px-4 py-3">Distortion (Δ%)</th>
               <th class="px-4 py-3">Status</th>
             </tr>
           </thead>
           <tbody id="featuresTableBody" class="divide-y divide-slate-800 font-mono">
             <tr>
-              <td colspan="6" class="px-4 py-8 text-center text-slate-500 font-sans">
+              <td colspan="8" class="px-4 py-8 text-center text-slate-500 font-sans">
                 No features uploaded yet. Upload a .kml or Shapefile .zip to inspect.
               </td>
             </tr>
@@ -196,14 +215,36 @@
 
   <!-- Leaflet & Script Logic -->
   <script>
-    // Initialize Map centered on India (default)
-    const map = L.map('map').setView([20.5937, 78.9629], 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    // Tile layers
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    });
+    const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, attribution: 'Tiles &copy; Esri World Imagery'
+    });
+
+    const map = L.map('map', { layers: [osmLayer] }).setView([20.5937, 78.9629], 5);
+    let currentBase = 'osm';
+
+    function setBaseMap(type) {
+      if (type === 'sat' && currentBase !== 'sat') {
+        map.removeLayer(osmLayer);
+        map.addLayer(satLayer);
+        currentBase = 'sat';
+        document.getElementById('btnSatellite').className = 'px-2.5 py-1 rounded bg-cyan-600 text-white font-medium';
+        document.getElementById('btnOsm').className = 'px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium';
+      } else if (type === 'osm' && currentBase !== 'osm') {
+        map.removeLayer(satLayer);
+        map.addLayer(osmLayer);
+        currentBase = 'osm';
+        document.getElementById('btnOsm').className = 'px-2.5 py-1 rounded bg-cyan-600 text-white font-medium';
+        document.getElementById('btnSatellite').className = 'px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium';
+      }
+    }
 
     let geoJsonLayerGroup = L.layerGroup().addTo(map);
+    let loadedFeatures = [];
+    let currentFilter = 'all';
 
     // Dropzone elements
     const dropzone = document.getElementById('dropzone');
@@ -215,15 +256,11 @@
     dropzone.addEventListener('drop', (e) => {
       e.preventDefault();
       dropzone.classList.remove('border-cyan-400');
-      if (e.dataTransfer.files.length > 0) {
-        uploadFile(e.dataTransfer.files[0]);
-      }
+      if (e.dataTransfer.files.length > 0) uploadFile(e.dataTransfer.files[0]);
     });
 
     fileInput.addEventListener('change', () => {
-      if (fileInput.files.length > 0) {
-        uploadFile(fileInput.files[0]);
-      }
+      if (fileInput.files.length > 0) uploadFile(fileInput.files[0]);
     });
 
     async function uploadFile(file) {
@@ -250,9 +287,10 @@
     }
 
     async function fetchAndRenderMeasurements(fileId) {
-      const res = await fetch(`/api/files/${fileId}/measurements/`);
+      const res = await fetch(`/api/files/${fileId}/measurements/?limit=500`);
       if (!res.ok) return;
       const data = await res.json();
+      loadedFeatures = data.features;
 
       // Update Metadata Card
       document.getElementById('metaId').innerText = data.id;
@@ -271,17 +309,25 @@
       document.getElementById('statTotalLength').innerText = Number(data.summary.total_length_meters).toLocaleString() + ' m';
       document.getElementById('statTotalLengthAlt').innerText = Number(data.summary.total_length_kilometers).toLocaleString() + ' km';
 
-      const jsonLink = document.getElementById('rawJsonLink');
-      jsonLink.href = `/api/files/${data.id}/measurements/`;
-      jsonLink.classList.remove('hidden');
+      // Export Buttons
+      const btnGeoJson = document.getElementById('btnExportGeoJson');
+      btnGeoJson.href = `/api/files/${data.id}/export?format=geojson`;
+      btnGeoJson.classList.remove('hidden');
 
-      // Clear previous map layers
+      const btnCsv = document.getElementById('btnExportCsv');
+      btnCsv.href = `/api/files/${data.id}/export?format=csv`;
+      btnCsv.classList.remove('hidden');
+
+      renderMapLayers(loadedFeatures);
+      renderTable(loadedFeatures);
+    }
+
+    function renderMapLayers(features) {
       geoJsonLayerGroup.clearLayers();
 
-      // Render Features on Map
       const geoJsonData = {
         type: 'FeatureCollection',
-        features: data.features.map(f => ({
+        features: features.map(f => ({
           type: 'Feature',
           geometry: f.geometry,
           properties: {
@@ -289,7 +335,8 @@
             feature_id: f.feature_id,
             geometry_type: f.geometry_type,
             formatted_measurement: f.measurement ? f.measurement.formatted : 'N/A',
-            projected_crs: f.projected_crs || 'N/A'
+            projected_crs: f.projected_crs || 'N/A',
+            distortion: f.measurement && f.measurement.advanced_metrics ? f.measurement.advanced_metrics.distortion_percentage : null
           }
         }))
       };
@@ -311,7 +358,8 @@
               <b style="color: #0284c7;">Feature:</b> ${feat.properties.feature_id}<br/>
               <b>Type:</b> ${feat.properties.geometry_type}<br/>
               <b>Measurement:</b> <span style="font-weight: 700; color: #059669;">${feat.properties.formatted_measurement}</span><br/>
-              <b>Projection:</b> <span style="font-size: 11px;">${feat.properties.projected_crs}</span>
+              <b>Projection:</b> <span style="font-size: 11px;">${feat.properties.projected_crs}</span><br/>
+              ${feat.properties.distortion ? `<b>Distortion:</b> ${feat.properties.distortion}%` : ''}
             </div>
           `);
         }
@@ -321,13 +369,33 @@
       try {
         map.fitBounds(layer.getBounds(), { padding: [50, 50] });
       } catch (e) {}
+    }
 
-      // Populate Table
+    function filterTable(type) {
+      currentFilter = type;
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.className = 'filter-btn px-2.5 py-1 rounded bg-slate-900 text-slate-400 hover:text-white font-medium';
+      });
+      event.target.className = 'filter-btn px-2.5 py-1 rounded bg-cyan-600 text-white font-medium';
+
+      if (type === 'all') {
+        renderTable(loadedFeatures);
+      } else {
+        const filtered = loadedFeatures.filter(f => f.geometry_type.includes(type));
+        renderTable(filtered);
+      }
+    }
+
+    function renderTable(features) {
       const tbody = document.getElementById('featuresTableBody');
       tbody.innerHTML = '';
-      document.getElementById('tableCount').innerText = data.features.length;
 
-      data.features.forEach(f => {
+      if (features.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500 font-sans">No matching features found.</td></tr>`;
+        return;
+      }
+
+      features.forEach(f => {
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-slate-900/60 transition';
 
@@ -336,12 +404,18 @@
         else if (f.geometry_type.includes('Line')) badgeTypeColor = 'bg-blue-950 text-blue-400 border border-blue-800';
         else if (f.geometry_type.includes('Point')) badgeTypeColor = 'bg-amber-950 text-amber-400 border border-amber-800';
 
+        const adv = f.measurement ? f.measurement.advanced_metrics : null;
+        const geoVal = adv && adv.geodesic_value ? Number(adv.geodesic_value).toLocaleString() : 'N/A';
+        const dist = adv && adv.distortion_percentage !== null ? `${adv.distortion_percentage}%` : '0.00%';
+
         tr.innerHTML = `
           <td class="px-4 py-3 font-medium text-white">${f.feature_id}</td>
           <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${f.geometry_type}</span></td>
           <td class="px-4 py-3 text-slate-400 text-[11px]">${f.projected_crs || 'N/A'}</td>
           <td class="px-4 py-3 text-slate-300">${f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE'}</td>
           <td class="px-4 py-3 text-emerald-400 font-bold">${f.measurement ? (f.measurement.formatted || 'N/A') : 'N/A'}</td>
+          <td class="px-4 py-3 text-cyan-400">${geoVal}</td>
+          <td class="px-4 py-3 text-amber-400">${dist}</td>
           <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[10px] ${f.status === 'SUCCESS' ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}">${f.status}</span></td>
         `;
         tbody.appendChild(tr);

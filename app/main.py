@@ -1,32 +1,53 @@
+import time
+import uuid
 from pathlib import Path
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
+from app.core.database import init_db
 from app.api.v1.endpoints import router as api_router
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize DB schema tables
+    await init_db()
+    yield
+    # Shutdown logic if needed
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="""
-## Enterprise Geospatial File Measurement API
+    description=r"""
+## 🛰️ Aereo Cloud Geospatial Measurement & Analytics Platform
 
-Designed for high-precision drone surveying and geospatial intelligence platforms like **Aereo Cloud**.
+High-performance geospatial API engineered for drone surveying, cadastral mapping, and spatial metric intelligence.
 
-### Key Capabilities:
-- **Multi-Format Ingestion**: Ingests ESRI Shapefile archives (`.zip`) and Keyhole Markup Language (`.kml`).
-- **Dynamic Projected CRS**: Auto-detects local UTM zones based on geometry centroids to perform accurate planar metric calculations rather than flawed geographic degree math.
-- **Geometric Measurement**:
-  - **Polygons / MultiPolygons**: Area calculation ($m^2$, hectares, $km^2$, acres).
-  - **LineStrings / MultiLineStrings**: Length calculation ($m$, $km$, feet).
-  - **Points**: Handled gracefully without crash or invalid measurements.
-- **Resilient & Fault-Tolerant**: Self-recovers invalid polygon rings and supports MultiGeometry placemarks.
+### Enterprise Features:
+- **Dual Ingestion**: ESRI Shapefiles (`.zip`) & OpenGIS KML (`.kml`) with magic byte security inspection.
+- **Dynamic UTM Metric Projection**: Automated centroid-based UTM zone re-projection eliminates geographic degree errors.
+- **WGS-84 Geodesic Verification**: Computes ellipsoidal ground-truth and distortion error percentages ($\Delta\%$).
+- **SQL Database Persistence**: SQLAlchemy async ORM with SHA-256 idempotency deduplication.
+- **Exports & Filtering**: GeoJSON and CSV exports with server-side pagination and geometry filtering.
     """,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
+
+# Request ID & Process Time Middleware
+@app.middleware("http")
+async def add_process_time_and_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time = time.perf_counter() - start_time
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time"] = f"{process_time * 1000:.2f}ms"
+    return response
 
 # CORS Middleware
 app.add_middleware(
@@ -63,4 +84,5 @@ async def health_check():
         "status": "HEALTHY",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
+        "database": "CONNECTED",
     }

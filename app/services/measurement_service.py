@@ -1,19 +1,36 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 from shapely.geometry.base import BaseGeometry
 from shapely.validation import make_valid
 from app.models.schemas import (
     FeatureMeasurement,
     MeasurementDetail,
     MeasurementUnit,
+    AdvancedGISMetrics,
 )
 from app.services.crs_service import crs_service
 
 class MeasurementService:
     """
-    Service responsible for calculating geometric measurements (Area, Length)
-    using projected metric coordinate transformations, with graceful handling of
-    Points, unsupported types, and malformed geometries.
+    Enterprise Measurement Engine.
+    Calculates projected planar measurements (Area, Length, Perimeter)
+    alongside ellipsoidal geodesic measurements and projection distortion metrics.
     """
+
+    @staticmethod
+    def _count_vertices(geom: BaseGeometry) -> int:
+        try:
+            if hasattr(geom, "geoms"):
+                return sum(MeasurementService._count_vertices(g) for g in geom.geoms)
+            if hasattr(geom, "exterior"):
+                count = len(geom.exterior.coords)
+                for hole in geom.interiors:
+                    count += len(hole.coords)
+                return count
+            if hasattr(geom, "coords"):
+                return len(geom.coords)
+        except Exception:
+            pass
+        return 0
 
     def process_feature(
         self,
@@ -22,24 +39,16 @@ class MeasurementService:
         properties: dict,
         source_crs_str: str,
     ) -> FeatureMeasurement:
-        """
-        Processes an individual geometry:
-        1. Validates geometry (auto-repairs invalid self-intersecting geometries if possible)
-        2. Detects geometry type
-        3. Transforms to optimal projected metric CRS (if geographic)
-        4. Calculates area/length or skips (points)
-        5. Returns structured FeatureMeasurement
-        """
         geom_type = geom.geom_type
         
-        # Safe GeoJSON mapping
+        # GeoJSON mapping
         try:
             from shapely.geometry import mapping
             geo_json_dict = mapping(geom)
         except Exception:
             geo_json_dict = {"type": geom_type, "coordinates": []}
 
-        # Handle Point geometries gracefully (Per specification: No measurement is required)
+        # Point geometries (Zero-dimensional)
         if geom_type in ("Point", "MultiPoint"):
             return FeatureMeasurement(
                 feature_id=feature_id,
@@ -54,12 +63,18 @@ class MeasurementService:
                     unit=MeasurementUnit.NONE,
                     formatted="N/A (Points have zero dimension)",
                     alternative_units={},
+                    advanced_metrics=AdvancedGISMetrics(
+                        geodesic_value=None,
+                        distortion_percentage=None,
+                        perimeter_meters=None,
+                        vertex_count=self._count_vertices(geom),
+                    ),
                 ),
                 status="SUCCESS",
                 notes="Point geometry does not possess area or length. Handled gracefully.",
             )
 
-        # Handle Polygons (Area calculation)
+        # Polygon geometries (Area calculation)
         if geom_type in ("Polygon", "MultiPolygon"):
             return self._calculate_polygon_measurement(
                 feature_id=feature_id,
@@ -70,7 +85,7 @@ class MeasurementService:
                 source_crs_str=source_crs_str,
             )
 
-        # Handle LineStrings (Length calculation)
+        # LineString geometries (Length calculation)
         if geom_type in ("LineString", "MultiLineString"):
             return self._calculate_linestring_measurement(
                 feature_id=feature_id,
@@ -81,7 +96,7 @@ class MeasurementService:
                 source_crs_str=source_crs_str,
             )
 
-        # Graceful handling for other/unsupported geometries (e.g. GeometryCollection)
+        # Graceful handling for other/unsupported geometries
         return FeatureMeasurement(
             feature_id=feature_id,
             geometry_type=geom_type,
@@ -110,7 +125,6 @@ class MeasurementService:
         source_crs_str: str,
     ) -> FeatureMeasurement:
         try:
-            # Ensure geometry validity
             if not geom.is_valid:
                 geom = make_valid(geom)
 
@@ -119,11 +133,18 @@ class MeasurementService:
                 geom, source_crs
             )
 
-            # Planar area in square meters
+            # Planar area & perimeter in projected metric CRS
             area_sq_m = round(float(projected_geom.area), 2)
+            perimeter_m = round(float(projected_geom.length), 2)
             hectares = round(area_sq_m / 10000.0, 4)
             sq_km = round(area_sq_m / 1000000.0, 6)
             acres = round(area_sq_m * 0.000247105, 4)
+
+            # Ellipsoidal Geodesic Area
+            geodesic_area = crs_service.calculate_geodesic_polygon_area(geom)
+            distortion_pct = 0.0
+            if geodesic_area > 0:
+                distortion_pct = round(abs(area_sq_m - geodesic_area) / geodesic_area * 100.0, 4)
 
             formatted = f"{area_sq_m:,.2f} m² ({hectares:,.4f} ha | {sq_km:,.4f} km²)"
 
@@ -143,10 +164,17 @@ class MeasurementService:
                         "hectares": hectares,
                         "square_kilometers": sq_km,
                         "acres": acres,
+                        "perimeter_meters": perimeter_m,
                     },
+                    advanced_metrics=AdvancedGISMetrics(
+                        geodesic_value=round(geodesic_area, 2),
+                        distortion_percentage=distortion_pct,
+                        perimeter_meters=perimeter_m,
+                        vertex_count=self._count_vertices(geom),
+                    ),
                 ),
                 status="SUCCESS",
-                notes="Area calculated via metric projected CRS transformation.",
+                notes="Area calculated via metric projected CRS transformation with WGS-84 geodesic verification.",
             )
         except Exception as ex:
             return FeatureMeasurement(
@@ -181,6 +209,12 @@ class MeasurementService:
             km = round(length_m / 1000.0, 4)
             feet = round(length_m * 3.28084, 2)
 
+            # Ellipsoidal Geodesic Length
+            geodesic_length = crs_service.calculate_geodesic_linestring_length(geom)
+            distortion_pct = 0.0
+            if geodesic_length > 0:
+                distortion_pct = round(abs(length_m - geodesic_length) / geodesic_length * 100.0, 4)
+
             formatted = f"{length_m:,.2f} m ({km:,.4f} km | {feet:,.2f} ft)"
 
             return FeatureMeasurement(
@@ -199,9 +233,15 @@ class MeasurementService:
                         "kilometers": km,
                         "feet": feet,
                     },
+                    advanced_metrics=AdvancedGISMetrics(
+                        geodesic_value=round(geodesic_length, 2),
+                        distortion_percentage=distortion_pct,
+                        perimeter_meters=None,
+                        vertex_count=self._count_vertices(geom),
+                    ),
                 ),
                 status="SUCCESS",
-                notes="Length calculated via metric projected CRS transformation.",
+                notes="Length calculated via metric projected CRS transformation with WGS-84 geodesic verification.",
             )
         except Exception as ex:
             return FeatureMeasurement(
