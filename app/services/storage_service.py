@@ -1,14 +1,12 @@
 import json
 import uuid
 import hashlib
-import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
-from sqlalchemy import select, func, and_
-from sqlalchemy.orm import selectinload
+from typing import Optional, Dict, Any, List
+from sqlalchemy import select, func, and_, update
 
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal, init_db
+from app.core.database import AsyncSessionLocal
 from app.models.db_models import GeospatialFileModel, GeospatialFeatureModel
 from app.models.schemas import (
     FileInfoResponse,
@@ -20,11 +18,12 @@ from app.models.schemas import (
     AdvancedGISMetrics,
     FileStatus,
 )
+from app.services.export_service import format_measurements_as_csv, format_features_as_geojson
 
 class StorageService:
     """
-    Enterprise Storage and Persistence Layer using SQLAlchemy ORM (SQLite / PostgreSQL)
-    with SHA-256 deduplication, query filtering, pagination, and GeoJSON/CSV exports.
+    Enterprise Storage and Persistence Layer using SQLAlchemy Async ORM.
+    Handles SHA-256 deduplication, query filtering, pagination, crash recovery, and export formatters.
     """
 
     @staticmethod
@@ -38,6 +37,22 @@ class StorageService:
             for byte_block in iter(lambda: f.read(65536), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
+
+    async def fail_unfinished_records(self) -> int:
+        """Startup recovery: Marks interrupted jobs as FAILED on server reboot."""
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                update(GeospatialFileModel)
+                .where(GeospatialFileModel.status.in_(["PENDING", "PROCESSING"]))
+                .values(
+                    status="FAILED",
+                    progress_pct=100,
+                    error_message="Job was interrupted by application shutdown or server restart."
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount
 
     async def find_existing_by_hash(self, file_hash: str) -> Optional[FileInfoResponse]:
         async with AsyncSessionLocal() as session:
@@ -65,6 +80,7 @@ class StorageService:
             file_size_bytes=model.file_size_bytes,
             file_hash_sha256=model.file_hash_sha256,
             error_message=model.error_message,
+            warnings=model.get_warnings(),
             uploaded_at=model.created_at.isoformat() if model.created_at else None,
         )
 
@@ -88,6 +104,7 @@ class StorageService:
                 feature_count=0,
                 status="PROCESSING",
                 progress_pct=10,
+                warnings_json="[]",
             )
             session.add(file_model)
             await session.commit()
@@ -121,7 +138,9 @@ class StorageService:
         crs: str,
         features: List[FeatureMeasurement],
         summary: MeasurementsSummary,
+        warnings: Optional[List[str]] = None,
     ) -> FileInfoResponse:
+        warnings = warnings or []
         async with AsyncSessionLocal() as session:
             stmt = select(GeospatialFileModel).where(GeospatialFileModel.id == file_id)
             result = await session.execute(stmt)
@@ -134,8 +153,8 @@ class StorageService:
             file_rec.status = "COMPLETED"
             file_rec.progress_pct = 100
             file_rec.summary_json = json.dumps(summary.model_dump())
+            file_rec.warnings_json = json.dumps(warnings)
 
-            # Batch insert features
             db_features = []
             for idx, f in enumerate(features):
                 adv = f.measurement.advanced_metrics if f.measurement else None
@@ -145,6 +164,7 @@ class StorageService:
                     feature_identifier=str(f.feature_id),
                     geometry_type=f.geometry_type,
                     geometry_geojson=json.dumps(f.geometry),
+                    geometry_wgs84_geojson=json.dumps(f.geometry_wgs84) if f.geometry_wgs84 else None,
                     properties_json=json.dumps(f.properties),
                     source_crs=f.crs,
                     projected_crs=f.projected_crs,
@@ -187,16 +207,13 @@ class StorageService:
             if not file_rec:
                 return None
 
-            # Summary
             summary_dict = file_rec.get_summary()
             summary = MeasurementsSummary(**summary_dict) if summary_dict else MeasurementsSummary()
 
-            # Query features with optional filtering and pagination
             query = select(GeospatialFeatureModel).where(GeospatialFeatureModel.file_id == file_id)
             if geometry_type:
                 query = query.where(GeospatialFeatureModel.geometry_type.ilike(f"%{geometry_type}%"))
             
-            # Count total matching
             count_stmt = select(func.count(GeospatialFeatureModel.id)).where(GeospatialFeatureModel.file_id == file_id)
             if geometry_type:
                 count_stmt = count_stmt.where(GeospatialFeatureModel.geometry_type.ilike(f"%{geometry_type}%"))
@@ -241,11 +258,19 @@ class StorageService:
                         advanced_metrics=adv,
                     )
 
+                wgs84_dict = None
+                if f.geometry_wgs84_geojson:
+                    try:
+                        wgs84_dict = json.loads(f.geometry_wgs84_geojson)
+                    except Exception:
+                        pass
+
                 features_list.append(
                     FeatureMeasurement(
                         feature_id=f.feature_identifier,
                         geometry_type=f.geometry_type,
                         geometry=json.loads(f.geometry_geojson),
+                        geometry_wgs84=wgs84_dict,
                         crs=f.source_crs,
                         projected_crs=f.projected_crs,
                         properties=json.loads(f.properties_json) if f.properties_json else {},
@@ -261,6 +286,7 @@ class StorageService:
                 crs=file_rec.crs,
                 summary=summary,
                 features=features_list,
+                warnings=file_rec.get_warnings(),
                 total_count=total_matching,
                 page=(offset // limit) + 1,
                 limit=limit,
@@ -276,48 +302,12 @@ class StorageService:
         meas = await self.get_measurements(file_id, limit=10000, offset=0)
         if not meas:
             return None
-        
-        geojson_features = []
-        for f in meas.features:
-            geojson_features.append({
-                "type": "Feature",
-                "id": f.feature_id,
-                "geometry": f.geometry,
-                "properties": {
-                    **f.properties,
-                    "geometry_type": f.geometry_type,
-                    "measurement_type": f.measurement.measurement_type if f.measurement else "none",
-                    "measurement_value": f.measurement.value if f.measurement else None,
-                    "measurement_unit": f.measurement.unit if f.measurement else "none",
-                    "formatted_measurement": f.measurement.formatted if f.measurement else "N/A",
-                    "projected_crs": f.projected_crs,
-                    "distortion_percentage": f.measurement.advanced_metrics.distortion_percentage if f.measurement and f.measurement.advanced_metrics else None,
-                }
-            })
-        return {
-            "type": "FeatureCollection",
-            "crs": {"type": "name", "properties": {"name": meas.crs}},
-            "features": geojson_features
-        }
+        return format_features_as_geojson(meas)
 
     async def export_csv(self, file_id: str) -> Optional[str]:
         meas = await self.get_measurements(file_id, limit=10000, offset=0)
         if not meas:
             return None
-        
-        lines = [
-            "Feature_ID,Geometry_Type,Measurement_Type,Value,Unit,Formatted,Projected_CRS,Geodesic_Value,Distortion_Pct,Status"
-        ]
-        for f in meas.features:
-            m = f.measurement
-            val = m.value if m and m.value is not None else ""
-            unit = m.unit.value if m else ""
-            fmt = f'"{m.formatted}"' if m and m.formatted else '""'
-            proj = f.projected_crs or ""
-            geo_val = m.advanced_metrics.geodesic_value if m and m.advanced_metrics and m.advanced_metrics.geodesic_value else ""
-            dist = m.advanced_metrics.distortion_percentage if m and m.advanced_metrics and m.advanced_metrics.distortion_percentage else ""
-            lines.append(f'"{f.feature_id}","{f.geometry_type}","{m.measurement_type if m else "none"}",{val},{unit},{fmt},"{proj}",{geo_val},{dist},"{f.status}"')
-        
-        return "\n".join(lines)
+        return format_measurements_as_csv(meas)
 
 storage_service = StorageService()

@@ -3,7 +3,6 @@ from typing import Tuple, Optional
 import pyproj
 from pyproj import CRS, Transformer, Geod
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform
 from app.core.exceptions import CRSTransformationError
 
 class CRSService:
@@ -13,12 +12,14 @@ class CRSService:
     Handles:
     - Auto-detection of Geographic vs Projected CRS
     - Dynamic calculation of optimal local UTM zone based on feature centroid
+    - Reprojection to WGS-84 (EPSG:4326) for RFC 7946 GeoJSON and web map display
     - Robust coordinate transformation using PROJ
     - Geodesic fallback validation via WGS84 ellipsoid
     """
 
     def __init__(self):
         self.wgs84_geod = Geod(ellps="WGS84")
+        self.wgs84_crs = CRS.from_epsg(4326)
 
     @staticmethod
     def parse_crs(crs_input: Optional[str]) -> CRS:
@@ -32,7 +33,6 @@ class CRSService:
         try:
             return CRS.from_user_input(crs_input)
         except Exception:
-            # Fallback to WGS84 if parsing fails
             return CRS.from_epsg(4326)
 
     @staticmethod
@@ -43,7 +43,6 @@ class CRSService:
         - Northern Hemisphere: EPSG: 32601 to 32660
         - Southern Hemisphere: EPSG: 32701 to 32760
         """
-        # Clamp longitude to [-180, 180]
         lon = max(-180.0, min(180.0, lon))
         zone_number = int(math.floor((lon + 180.0) / 6.0)) + 1
         zone_number = max(1, min(60, zone_number))
@@ -53,22 +52,26 @@ class CRSService:
         else:
             return 32700 + zone_number
 
+    @staticmethod
+    def are_coordinates_geographic(bounds: Tuple[float, float, float, float]) -> bool:
+        """Checks if bounding coordinates (minx, miny, maxx, maxy) fit inside [-180, 180] and [-90, 90]."""
+        minx, miny, maxx, maxy = bounds
+        return -180.0 <= minx <= 180.0 and -180.0 <= maxx <= 180.0 and -90.0 <= miny <= 90.0 and -90.0 <= maxy <= 90.0
+
     def get_projected_crs_for_geometry(self, geom: BaseGeometry, source_crs: CRS) -> Tuple[CRS, str]:
         """
         Determines the most accurate projected metric CRS for a geometry.
-        If the source CRS is already projected, returns it.
+        If the source CRS is already projected, returns it directly.
         If geographic (degrees, e.g. EPSG:4326), calculates the local UTM zone from centroid.
         """
         if source_crs.is_projected:
             return source_crs, source_crs.to_string()
         
-        # Calculate centroid in geographic degrees
         try:
             centroid = geom.centroid
             lon, lat = centroid.x, centroid.y
         except Exception:
-            # Fallback representative coordinate
-            bounds = geom.bounds  # (minx, miny, maxx, maxy)
+            bounds = geom.bounds
             lon = (bounds[0] + bounds[2]) / 2.0
             lat = (bounds[1] + bounds[3]) / 2.0
 
@@ -94,11 +97,24 @@ class CRSService:
                 source_crs, projected_crs, always_xy=True
             )
             import shapely
-            # Use modern Shapely 2.0+ vectorized transform with interleaved=False for pyproj
             projected_geom = shapely.transform(geom, transformer.transform, interleaved=False)
             return projected_geom, crs_name
         except Exception as e:
             raise CRSTransformationError(f"Failed to project geometry to {crs_name}: {str(e)}")
+
+    def to_wgs84(self, geom: BaseGeometry, source_crs: CRS) -> BaseGeometry:
+        """
+        Transforms a geometry to WGS-84 (EPSG:4326) coordinates for map display and RFC 7946 GeoJSON.
+        If already in EPSG:4326, returns the geometry directly.
+        """
+        if source_crs.is_geographic and getattr(source_crs, "to_epsg", lambda: None)() == 4326:
+            return geom
+        try:
+            transformer = Transformer.from_crs(source_crs, self.wgs84_crs, always_xy=True)
+            import shapely
+            return shapely.transform(geom, transformer.transform, interleaved=False)
+        except Exception:
+            return geom
 
     def calculate_geodesic_polygon_area(self, geom: BaseGeometry) -> float:
         """

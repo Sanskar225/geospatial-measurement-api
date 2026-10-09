@@ -27,10 +27,10 @@ class GeospatialFileModel(Base):
     progress_pct = Column(Integer, nullable=False, default=0)
     error_message = Column(Text, nullable=True)
     summary_json = Column(Text, nullable=True)
+    warnings_json = Column(Text, nullable=True, default="[]")
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
     updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 
-    # Relationship to features
     features = relationship(
         "GeospatialFeatureModel",
         back_populates="file_record",
@@ -46,6 +46,14 @@ class GeospatialFileModel(Base):
                 pass
         return {}
 
+    def get_warnings(self) -> list:
+        if self.warnings_json:
+            try:
+                return json.loads(self.warnings_json)
+            except Exception:
+                pass
+        return []
+
 
 class GeospatialFeatureModel(Base):
     __tablename__ = "geospatial_features"
@@ -56,19 +64,20 @@ class GeospatialFeatureModel(Base):
     feature_identifier = Column(String(255), nullable=False)
     geometry_type = Column(String(50), nullable=False, index=True)
     geometry_geojson = Column(Text, nullable=False)
+    geometry_wgs84_geojson = Column(Text, nullable=True)
     properties_json = Column(Text, nullable=False, default="{}")
     source_crs = Column(String(100), nullable=False)
     projected_crs = Column(String(100), nullable=True)
     
     # Measurements
-    measurement_type = Column(String(20), nullable=False, default="none")  # "area", "length", "none"
-    measurement_value = Column(Float, nullable=True)  # in m² or m
+    measurement_type = Column(String(20), nullable=False, default="none")
+    measurement_value = Column(Float, nullable=True)
     measurement_unit = Column(String(30), nullable=False, default="none")
     alternative_units_json = Column(Text, nullable=True)
     
     # Advanced GIS Metrics
-    geodesic_value = Column(Float, nullable=True)  # Ellipsoidal ground-truth
-    distortion_percentage = Column(Float, nullable=True)  # Projected vs Geodesic variance
+    geodesic_value = Column(Float, nullable=True)
+    distortion_percentage = Column(Float, nullable=True)
     
     status = Column(String(30), nullable=False, default="SUCCESS")
     notes = Column(Text, nullable=True)

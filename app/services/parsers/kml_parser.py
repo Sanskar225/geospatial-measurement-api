@@ -1,4 +1,7 @@
 import re
+import zipfile
+import tempfile
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import defusedxml.ElementTree as ET
@@ -11,8 +14,8 @@ from app.services.parsers.base import ParsedDataset, ParsedFeature
 
 class KMLParser:
     """
-    Production KML 2.2 parser with namespace agnosticism, XXE protection,
-    and support for Polygon (with holes), LineString, MultiGeometry, and Points.
+    Production KML / KMZ parser with namespace agnosticism, XXE protection,
+    BOM handling, and support for Polygon (with holes), LineString, MultiGeometry, and Points.
     """
 
     @staticmethod
@@ -22,13 +25,7 @@ class KMLParser:
 
     @staticmethod
     def _parse_coordinates_str(coords_str: str) -> List[Tuple[float, float]]:
-        """
-        Parses KML coordinate strings format:
-        lon,lat[,alt] lon,lat[,alt] ...
-        Returns list of (lon, lat) tuples.
-        """
         result = []
-        # Split on whitespace/newline
         tokens = re.split(r"\s+", coords_str.strip())
         for token in tokens:
             if not token:
@@ -103,6 +100,13 @@ class KMLParser:
             return self._parse_linestring(elem)
         elif tag == "Point":
             return self._parse_point(elem)
+        elif tag == "LinearRing":
+            coords = self._parse_coordinates_str(elem.text or "")
+            if len(coords) >= 2:
+                try:
+                    return LineString(coords)
+                except Exception:
+                    pass
         elif tag == "MultiGeometry":
             sub_geoms = []
             for sub in elem:
@@ -113,7 +117,6 @@ class KMLParser:
             if not sub_geoms:
                 return None
             
-            # Combine if same type
             if all(isinstance(g, Polygon) for g in sub_geoms):
                 return MultiPolygon(sub_geoms)
             elif all(isinstance(g, LineString) for g in sub_geoms):
@@ -143,47 +146,79 @@ class KMLParser:
                             props[attr_name] = ext.text.strip()
         return props
 
-    def parse(self, kml_filepath: Path) -> ParsedDataset:
+    def parse(self, filepath: Path) -> ParsedDataset:
+        file_type = "KML"
+        kml_source_path = filepath
+        temp_dir = None
+
+        # Check if KMZ (Zipped KML)
+        if filepath.suffix.lower() == ".kmz" or (zipfile.is_zipfile(filepath) and filepath.suffix.lower() != ".zip"):
+            file_type = "KMZ"
+            temp_dir = tempfile.mkdtemp(prefix="kmz_extract_")
+            try:
+                with zipfile.ZipFile(filepath, 'r') as kmz_ref:
+                    kml_members = [m for m in kmz_ref.namelist() if m.lower().endswith(".kml")]
+                    if not kml_members:
+                        raise FileFormatError("KMZ archive does not contain any .kml file.")
+                    kmz_ref.extract(kml_members[0], temp_dir)
+                    kml_source_path = Path(temp_dir) / kml_members[0]
+            except Exception as e:
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                raise FileFormatError(f"Failed to open KMZ archive: {str(e)}")
+
         try:
-            tree = ET.parse(str(kml_filepath))
-            root = tree.getroot()
-        except Exception as e:
-            raise FileFormatError(f"Corrupted or invalid KML XML structure: {str(e)}")
+            # Read XML content with BOM strip
+            with open(kml_source_path, "rb") as f:
+                content = f.read()
 
-        features: List[ParsedFeature] = []
-        feature_index = 1
+            for bom in (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"):
+                if content.startswith(bom):
+                    content = content[len(bom):]
+                    break
 
-        # Traverse all elements to find Placemarks
-        for elem in root.iter():
-            if self._clean_tag(elem.tag) == "Placemark":
-                props = self._extract_properties(elem)
-                feature_id = props.get("name") or str(feature_index)
+            try:
+                root = ET.fromstring(content)
+            except Exception as e:
+                raise FileFormatError(f"Corrupted or invalid KML XML structure: {str(e)}")
 
-                # Find geometries within placemark
-                geom = None
-                for child in elem:
-                    geom = self._extract_geometry_from_element(child)
+            features: List[ParsedFeature] = []
+            feature_index = 1
+
+            for elem in root.iter():
+                if self._clean_tag(elem.tag) == "Placemark":
+                    props = self._extract_properties(elem)
+                    feature_id = props.get("name") or str(feature_index)
+
+                    geom = None
+                    for child in elem:
+                        geom = self._extract_geometry_from_element(child)
+                        if geom is not None:
+                            break
+
                     if geom is not None:
-                        break
-
-                if geom is not None:
-                    features.append(
-                        ParsedFeature(
-                            feature_id=str(feature_id),
-                            geometry=geom,
-                            properties=props,
+                        features.append(
+                            ParsedFeature(
+                                feature_id=str(feature_id),
+                                geometry=geom,
+                                properties=props,
+                            )
                         )
-                    )
-                    feature_index += 1
+                        feature_index += 1
 
-        if not features:
-            raise FileFormatError("No valid geospatial features (Placemarks) found in the KML file.")
+            if not features:
+                raise FileFormatError("No valid geospatial features (Placemarks) found in the KML file.")
 
-        return ParsedDataset(
-            features=features,
-            crs="EPSG:4326",  # Standard KML specification CRS
-            file_type="KML",
-            metadata={"total_features": len(features)}
-        )
+            return ParsedDataset(
+                features=features,
+                crs="EPSG:4326",
+                file_type=file_type,
+                warnings=[],
+                metadata={"total_features": len(features)}
+            )
+
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
 kml_parser = KMLParser()

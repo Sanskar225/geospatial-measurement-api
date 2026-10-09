@@ -1,6 +1,9 @@
+import zipfile
 import pytest
 from pathlib import Path
 from fastapi.testclient import TestClient
+import shapefile
+
 from app.main import app
 
 client = TestClient(app)
@@ -91,7 +94,33 @@ def test_export_endpoints():
     csv_res = client.get(f"/api/files/{file_id}/export?format=csv")
     assert csv_res.status_code == 200
     assert "text/csv" in csv_res.headers["content-type"]
-    assert "Feature_ID,Geometry_Type" in csv_res.text
+    assert "feature_id,name,geometry_type" in csv_res.text
+
+def test_csv_injection_defense(tmp_path):
+    # Create KML with malicious formula injection name
+    malicious_kml = """<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>=cmd|' /C calc'!A0</name>
+          <Point><coordinates>77.58,12.97,0</coordinates></Point>
+        </Placemark>
+      </Document>
+    </kml>
+    """
+    kml_file = tmp_path / "formula_test.kml"
+    kml_file.write_text(malicious_kml)
+
+    with open(kml_file, "rb") as f:
+        upload_res = client.post("/api/files/", files={"file": ("formula_test.kml", f, "text/xml")})
+    
+    assert upload_res.status_code == 201
+    file_id = upload_res.json()["id"]
+
+    csv_res = client.get(f"/api/files/{file_id}/export?format=csv")
+    assert csv_res.status_code == 200
+    # Must be sanitized with leading single quote to prevent execution in spreadsheet software
+    assert "'=cmd|" in csv_res.text
 
 def test_pagination_and_filtering():
     kml_path = SAMPLE_DIR / "survey_sample.kml"
@@ -127,6 +156,87 @@ def test_upload_shapefile_zip_flow():
     meas_data = meas_res.json()
     assert meas_data["summary"]["polygon_count"] == 2
     assert meas_data["summary"]["total_area_sq_meters"] > 0
+
+def test_upload_utm_projected_shapefile_flow():
+    # Tests a Shapefile that is ALREADY projected in UTM (EPSG:32643, meters)
+    shp_path = SAMPLE_DIR / "sample_utm_shapefile.zip"
+    with open(shp_path, "rb") as f:
+        response = client.post(
+            "/api/files/",
+            files={"file": ("sample_utm_shapefile.zip", f, "application/zip")}
+        )
+    
+    assert response.status_code == 201
+    data = response.json()
+    assert "32643" in data["crs"]
+    assert data["status"] == "COMPLETED"
+
+    file_id = data["id"]
+    meas_res = client.get(f"/api/files/{file_id}/measurements/")
+    assert meas_res.status_code == 200
+    meas_data = meas_res.json()
+    
+    # Check that geometry_wgs84 was generated for web map display
+    feat = meas_data["features"][0]
+    assert feat["geometry_wgs84"] is not None
+    # WGS-84 coordinates should be in lon/lat degrees (~75E, ~12.9N)
+    first_lon = feat["geometry_wgs84"]["coordinates"][0][0][0]
+    assert 70.0 < first_lon < 80.0
+
+def test_missing_prj_with_planar_coords_raises_422(tmp_path):
+    # Create Shapefile with planar coords (500000, 1435000) WITHOUT .prj
+    shp_base = tmp_path / "noprj"
+    w = shapefile.Writer(str(shp_base), shapeType=shapefile.POLYGON)
+    w.field("NAME", "C")
+    w.poly([[[500000.0, 1435000.0], [500500.0, 1435000.0], [500500.0, 1435500.0], [500000.0, 1435500.0], [500000.0, 1435000.0]]])
+    w.record("Planar Yard")
+    w.close()
+
+    # Pack into zip WITHOUT .prj
+    zip_path = tmp_path / "noprj_planar.zip"
+    with zipfile.ZipFile(zip_path, "w") as zout:
+        for ext in [".shp", ".shx", ".dbf"]:
+            p = tmp_path / f"noprj{ext}"
+            zout.write(p, arcname=f"noprj{ext}")
+
+    with open(zip_path, "rb") as f:
+        res = client.post("/api/files/", files={"file": ("noprj_planar.zip", f, "application/zip")})
+
+    assert res.status_code == 422
+    data = res.json()
+    assert data["error_code"] == "CRS_MISSING"
+    assert "outside valid longitude/latitude" in data["detail"]
+
+def test_kmz_upload_flow(tmp_path):
+    # Create valid KMZ (zipped KML)
+    kml_sample = """<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>KMZ Zone A</name>
+          <Polygon>
+            <outerBoundaryIs>
+              <LinearRing>
+                <coordinates>77.58,12.97,0 77.59,12.97,0 77.59,12.98,0 77.58,12.98,0 77.58,12.97,0</coordinates>
+              </LinearRing>
+            </outerBoundaryIs>
+          </Polygon>
+        </Placemark>
+      </Document>
+    </kml>
+    """
+    kmz_path = tmp_path / "survey_mission.kmz"
+    with zipfile.ZipFile(kmz_path, "w") as zout:
+        zout.writestr("doc.kml", kml_sample)
+
+    with open(kmz_path, "rb") as f:
+        res = client.post("/api/files/", files={"file": ("survey_mission.kmz", f, "application/vnd.google-earth.kmz")})
+
+    assert res.status_code == 201
+    data = res.json()
+    assert data["file_type"] == "KMZ"
+    assert data["feature_count"] == 1
+    assert data["status"] == "COMPLETED"
 
 def test_upload_invalid_extension():
     response = client.post(

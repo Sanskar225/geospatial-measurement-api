@@ -160,5 +160,42 @@ with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_out:
 # Clean up temp files
 import shutil
 shutil.rmtree(shp_temp_dir)
-
 print("Created sample_shapefile.zip")
+
+# 3. Generate Sample UTM Projected Shapefile (.zip) - EPSG:32643 (UTM 43N)
+utm_base_name = "sample_utm_cadastre"
+utm_temp_dir = SAMPLE_DIR / "temp_utm_shp"
+utm_temp_dir.mkdir(exist_ok=True)
+
+w_utm = shapefile.Writer(str(utm_temp_dir / utm_base_name), shapeType=shapefile.POLYGON)
+w_utm.field("NAME", "C", size=50)
+w_utm.field("SECTOR", "C", size=30)
+
+# Feature 1: Stockpile Yard 1 (coordinates in meters)
+w_utm.poly([
+    [
+        [500000.0, 1435000.0],
+        [500500.0, 1435000.0],
+        [500500.0, 1435500.0],
+        [500000.0, 1435500.0],
+        [500000.0, 1435000.0]
+    ]
+])
+w_utm.record("Stockpile Yard 1", "Mining Pit A")
+
+w_utm.close()
+
+# Write UTM Zone 43N .prj WKT
+utm_prj_wkt = 'PROJCS["WGS_1984_UTM_Zone_43N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",75.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]'
+with open(utm_temp_dir / f"{utm_base_name}.prj", "w", encoding="utf-8") as f:
+    f.write(utm_prj_wkt)
+
+utm_zip_path = SAMPLE_DIR / "sample_utm_shapefile.zip"
+with zipfile.ZipFile(utm_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_out:
+    for ext in [".shp", ".shx", ".dbf", ".prj"]:
+        file_to_pack = utm_temp_dir / f"{utm_base_name}{ext}"
+        if file_to_pack.exists():
+            zip_out.write(file_to_pack, arcname=f"{utm_base_name}{ext}")
+
+shutil.rmtree(utm_temp_dir)
+print("Created sample_utm_shapefile.zip")

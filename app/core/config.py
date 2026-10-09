@@ -14,7 +14,7 @@ class Settings(BaseModel):
     
     # Security / file constraints
     MAX_UPLOAD_SIZE_MB: int = 50  # 50 MB limit
-    ALLOWED_EXTENSIONS: set = {".zip", ".kml"}
+    ALLOWED_EXTENSIONS: set = {".zip", ".kml", ".kmz"}
     
     # CRS configuration defaults
     DEFAULT_GEOGRAPHIC_CRS: str = "EPSG:4326"

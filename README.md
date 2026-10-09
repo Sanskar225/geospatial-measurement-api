@@ -3,11 +3,11 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/Framework-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![Database](https://img.shields.io/badge/ORM-SQLAlchemy%20Async-red.svg)](https://www.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Tests-21%2F21%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-25%2F25%20Passed-brightgreen.svg)]()
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue.svg)](https://github.com/)
 
-A high-performance, production-grade geospatial service engineered for **vector feature extraction, dynamic CRS metric projection, and dual geometric measurement (Planar UTM + Geodesic WGS-84)**. Built specifically to handle aerial drone survey orthomosaics, parcel boundaries, and utility corridors in **ESRI Shapefile archives (`.zip`)** and **Keyhole Markup Language (`.kml`)**.
+A high-performance, production-grade geospatial service engineered for **vector feature extraction, dynamic CRS metric projection, and dual geometric measurement (Planar UTM + Geodesic WGS-84)**. Built specifically to handle aerial drone survey orthomosaics, parcel boundaries, and utility corridors in **ESRI Shapefile archives (`.zip`)**, **Keyhole Markup Language (`.kml`)**, and compressed **KMZ archives (`.kmz`)**.
 
 ---
 

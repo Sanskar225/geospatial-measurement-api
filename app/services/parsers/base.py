@@ -13,4 +13,5 @@ class ParsedDataset:
     features: List[ParsedFeature]
     crs: str
     file_type: str
+    warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)

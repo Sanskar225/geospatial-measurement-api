@@ -1,6 +1,7 @@
 from typing import Optional, Tuple, Dict, Any
 from shapely.geometry.base import BaseGeometry
 from shapely.validation import make_valid
+from shapely.geometry import mapping
 from app.models.schemas import (
     FeatureMeasurement,
     MeasurementDetail,
@@ -14,6 +15,7 @@ class MeasurementService:
     Enterprise Measurement Engine.
     Calculates projected planar measurements (Area, Length, Perimeter)
     alongside ellipsoidal geodesic measurements and projection distortion metrics.
+    Also produces WGS-84 geometry for RFC 7946 compliance and web map rendering.
     """
 
     @staticmethod
@@ -40,13 +42,20 @@ class MeasurementService:
         source_crs_str: str,
     ) -> FeatureMeasurement:
         geom_type = geom.geom_type
+        source_crs = crs_service.parse_crs(source_crs_str)
         
-        # GeoJSON mapping
+        # Native GeoJSON mapping
         try:
-            from shapely.geometry import mapping
             geo_json_dict = mapping(geom)
         except Exception:
             geo_json_dict = {"type": geom_type, "coordinates": []}
+
+        # WGS-84 GeoJSON mapping (for web maps if source is projected)
+        try:
+            wgs84_geom = crs_service.to_wgs84(geom, source_crs)
+            geo_json_wgs84 = mapping(wgs84_geom) if source_crs.is_projected else None
+        except Exception:
+            geo_json_wgs84 = None
 
         # Point geometries (Zero-dimensional)
         if geom_type in ("Point", "MultiPoint"):
@@ -54,6 +63,7 @@ class MeasurementService:
                 feature_id=feature_id,
                 geometry_type=geom_type,
                 geometry=geo_json_dict,
+                geometry_wgs84=geo_json_wgs84,
                 crs=source_crs_str,
                 projected_crs=None,
                 properties=properties,
@@ -81,6 +91,7 @@ class MeasurementService:
                 geom=geom,
                 geom_type=geom_type,
                 geo_json_dict=geo_json_dict,
+                geo_json_wgs84=geo_json_wgs84,
                 properties=properties,
                 source_crs_str=source_crs_str,
             )
@@ -92,6 +103,7 @@ class MeasurementService:
                 geom=geom,
                 geom_type=geom_type,
                 geo_json_dict=geo_json_dict,
+                geo_json_wgs84=geo_json_wgs84,
                 properties=properties,
                 source_crs_str=source_crs_str,
             )
@@ -101,6 +113,7 @@ class MeasurementService:
             feature_id=feature_id,
             geometry_type=geom_type,
             geometry=geo_json_dict,
+            geometry_wgs84=geo_json_wgs84,
             crs=source_crs_str,
             projected_crs=None,
             properties=properties,
@@ -121,6 +134,7 @@ class MeasurementService:
         geom: BaseGeometry,
         geom_type: str,
         geo_json_dict: dict,
+        geo_json_wgs84: Optional[dict],
         properties: dict,
         source_crs_str: str,
     ) -> FeatureMeasurement:
@@ -141,7 +155,9 @@ class MeasurementService:
             acres = round(area_sq_m * 0.000247105, 4)
 
             # Ellipsoidal Geodesic Area
-            geodesic_area = crs_service.calculate_geodesic_polygon_area(geom)
+            # Calculate geodesic over WGS-84 geometry if source was projected, else over geom
+            wgs84_for_geod = crs_service.to_wgs84(geom, source_crs) if source_crs.is_projected else geom
+            geodesic_area = crs_service.calculate_geodesic_polygon_area(wgs84_for_geod)
             distortion_pct = 0.0
             if geodesic_area > 0:
                 distortion_pct = round(abs(area_sq_m - geodesic_area) / geodesic_area * 100.0, 4)
@@ -152,6 +168,7 @@ class MeasurementService:
                 feature_id=feature_id,
                 geometry_type=geom_type,
                 geometry=geo_json_dict,
+                geometry_wgs84=geo_json_wgs84,
                 crs=source_crs_str,
                 projected_crs=proj_crs_name,
                 properties=properties,
@@ -181,6 +198,7 @@ class MeasurementService:
                 feature_id=feature_id,
                 geometry_type=geom_type,
                 geometry=geo_json_dict,
+                geometry_wgs84=geo_json_wgs84,
                 crs=source_crs_str,
                 projected_crs=None,
                 properties=properties,
@@ -195,6 +213,7 @@ class MeasurementService:
         geom: BaseGeometry,
         geom_type: str,
         geo_json_dict: dict,
+        geo_json_wgs84: Optional[dict],
         properties: dict,
         source_crs_str: str,
     ) -> FeatureMeasurement:
@@ -210,7 +229,8 @@ class MeasurementService:
             feet = round(length_m * 3.28084, 2)
 
             # Ellipsoidal Geodesic Length
-            geodesic_length = crs_service.calculate_geodesic_linestring_length(geom)
+            wgs84_for_geod = crs_service.to_wgs84(geom, source_crs) if source_crs.is_projected else geom
+            geodesic_length = crs_service.calculate_geodesic_linestring_length(wgs84_for_geod)
             distortion_pct = 0.0
             if geodesic_length > 0:
                 distortion_pct = round(abs(length_m - geodesic_length) / geodesic_length * 100.0, 4)
@@ -221,6 +241,7 @@ class MeasurementService:
                 feature_id=feature_id,
                 geometry_type=geom_type,
                 geometry=geo_json_dict,
+                geometry_wgs84=geo_json_wgs84,
                 crs=source_crs_str,
                 projected_crs=proj_crs_name,
                 properties=properties,
@@ -248,6 +269,7 @@ class MeasurementService:
                 feature_id=feature_id,
                 geometry_type=geom_type,
                 geometry=geo_json_dict,
+                geometry_wgs84=geo_json_wgs84,
                 crs=source_crs_str,
                 projected_crs=None,
                 properties=properties,

@@ -9,12 +9,16 @@ from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.core.database import init_db
+from app.services.storage_service import storage_service
 from app.api.v1.endpoints import router as api_router
+from app.api.errors import register_exception_handlers
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize DB schema tables
     await init_db()
+    # Startup recovery: Cleanly mark any interrupted jobs as FAILED
+    await storage_service.fail_unfinished_records()
     yield
     # Shutdown logic if needed
 
@@ -27,16 +31,19 @@ app = FastAPI(
 High-performance geospatial API engineered for drone surveying, cadastral mapping, and spatial metric intelligence.
 
 ### Enterprise Features:
-- **Dual Ingestion**: ESRI Shapefiles (`.zip`) & OpenGIS KML (`.kml`) with magic byte security inspection.
+- **Multi-Format Ingestion**: ESRI Shapefiles (`.zip`), OpenGIS KML (`.kml`), and KMZ (`.kmz`) with magic byte signature inspection.
 - **Dynamic UTM Metric Projection**: Automated centroid-based UTM zone re-projection eliminates geographic degree errors.
 - **WGS-84 Geodesic Verification**: Computes ellipsoidal ground-truth and distortion error percentages ($\Delta\%$).
-- **SQL Database Persistence**: SQLAlchemy async ORM with SHA-256 idempotency deduplication.
-- **Exports & Filtering**: GeoJSON and CSV exports with server-side pagination and geometry filtering.
+- **SQL Database Persistence**: SQLAlchemy async ORM with SHA-256 idempotency deduplication and crash recovery.
+- **Exports & Filtering**: RFC 7946 GeoJSON and CSV exports with server-side pagination and geometry filtering.
     """,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Register centralized domain exception handlers
+register_exception_handlers(app)
 
 # Request ID & Process Time Middleware
 @app.middleware("http")

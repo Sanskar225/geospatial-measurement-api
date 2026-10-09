@@ -40,7 +40,8 @@ class MeasurementDetail(BaseModel):
 class FeatureMeasurement(BaseModel):
     feature_id: Union[str, int] = Field(..., description="Unique identifier or index of the feature")
     geometry_type: str = Field(..., description="Type of geometry (e.g. Polygon, LineString, Point)")
-    geometry: Dict[str, Any] = Field(..., description="GeoJSON geometry representation")
+    geometry: Dict[str, Any] = Field(..., description="GeoJSON geometry representation in source CRS")
+    geometry_wgs84: Optional[Dict[str, Any]] = Field(None, description="Geometry reprojected to EPSG:4326 for map rendering and RFC 7946")
     crs: str = Field(..., description="Original input CRS of the feature")
     projected_crs: Optional[str] = Field(None, description="Projected CRS applied for planar metric calculations")
     properties: Dict[str, Any] = Field(default_factory=dict, description="Attribute table properties associated with feature")
@@ -59,6 +60,7 @@ class FileInfoResponse(BaseModel):
     file_size_bytes: Optional[int] = Field(None, description="File size in bytes")
     file_hash_sha256: Optional[str] = Field(None, description="Cryptographic SHA-256 hash for deduplication")
     error_message: Optional[str] = Field(None, description="Error detail if status is FAILED")
+    warnings: List[str] = Field(default_factory=list, description="Diagnostic warnings (e.g. assumed CRS, high distortion)")
     uploaded_at: Optional[str] = Field(None, description="ISO timestamp of upload")
 
 class MeasurementsSummary(BaseModel):
@@ -80,6 +82,7 @@ class MeasurementsResponse(BaseModel):
     crs: str
     summary: MeasurementsSummary
     features: List[FeatureMeasurement]
+    warnings: List[str] = Field(default_factory=list, description="Diagnostic warnings")
     total_count: Optional[int] = None
     page: Optional[int] = 1
     limit: Optional[int] = 100

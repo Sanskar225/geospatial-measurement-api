@@ -1,7 +1,6 @@
-import shutil
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Query, BackgroundTasks, Response, status
+from fastapi import APIRouter, UploadFile, File, Query, status
 from fastapi.responses import PlainTextResponse
 
 from app.core.config import settings
@@ -13,8 +12,8 @@ from app.models.schemas import (
     FileInfoResponse,
     MeasurementsResponse,
     MeasurementsSummary,
-    FileStatus,
 )
+from app.services.upload_storage import save_upload_stream
 from app.services.parsers.shapefile_parser import shapefile_parser
 from app.services.parsers.kml_parser import kml_parser
 from app.services.measurement_service import measurement_service
@@ -22,30 +21,54 @@ from app.services.storage_service import storage_service
 
 router = APIRouter(prefix="/files", tags=["Geospatial Files"])
 
-def _validate_magic_bytes(file_path: Path, ext: str):
-    """Deep inspection of file headers to prevent extension spoofing."""
-    with open(file_path, "rb") as f:
-        header = f.read(16)
-        if ext == ".zip":
-            # Standard ZIP magic header PK\x03\x04
-            if not header.startswith(b"PK\x03\x04"):
-                raise FileFormatError("File header mismatch: Not a genuine ZIP archive.")
-        elif ext == ".kml":
-            # KML should be XML/text based
-            preview = header.decode("latin1", errors="ignore").lower()
-            if not ("<" in preview or "xml" in preview or "kml" in preview):
-                raise FileFormatError("File header mismatch: Not a genuine XML/KML file.")
+@router.post(
+    "/",
+    response_model=FileInfoResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload and process a geospatial file",
+    description="Accepts .zip (Shapefile), .kml, or .kmz. Performs magic byte inspection, SHA-256 deduplication, "
+                "dynamic UTM projection, and geometric metric calculations."
+)
+async def upload_geospatial_file(
+    file: UploadFile = File(...),
+):
+    filename = file.filename or "unknown"
+    suffix = Path(filename).suffix.lower()
 
-async def process_geospatial_file_task(saved_path: Path, file_id: str, suffix: str):
-    """Background or synchronous processing worker."""
+    if suffix not in settings.ALLOWED_EXTENSIONS:
+        raise FileFormatError(
+            f"Unsupported file extension '{suffix}'. Supported: {', '.join(sorted(settings.ALLOWED_EXTENSIONS))}"
+        )
+
+    file_id = storage_service.generate_id()
+
+    # Stream to disk safely while enforcing size limit and verifying magic bytes
+    saved = await save_upload_stream(file, settings.UPLOAD_DIR, file_id)
+
+    # Check for deduplication (Idempotent response)
+    existing = await storage_service.find_existing_by_hash(saved.sha256)
+    if existing:
+        saved.path.unlink(missing_ok=True)
+        return existing
+
+    # Create Initial Processing Record
+    file_type = "Shapefile (.zip)" if suffix == ".zip" else ("KMZ" if suffix == ".kmz" else "KML")
+    await storage_service.create_file_record(
+        file_id=file_id,
+        filename=filename,
+        file_type=file_type,
+        file_size_bytes=saved.size,
+        file_hash=saved.sha256,
+    )
+
     try:
         await storage_service.update_progress(file_id, 30, status="PROCESSING")
 
         # Parse dataset
         if suffix == ".zip":
-            dataset = shapefile_parser.parse(saved_path)
-        elif suffix == ".kml":
-            dataset = kml_parser.parse(saved_path)
+            dataset = shapefile_parser.parse(saved.path)
+        elif suffix in (".kml", ".kmz"):
+            dataset = kml_parser.parse(saved.path)
         else:
             raise FileFormatError(f"Unhandled file extension: {suffix}")
 
@@ -89,79 +112,20 @@ async def process_geospatial_file_task(saved_path: Path, file_id: str, suffix: s
 
         await storage_service.update_progress(file_id, 90, status="PROCESSING")
 
-        # Persist features to database
-        await storage_service.complete_file_processing(
+        # Complete and persist record with diagnostic warnings
+        file_info = await storage_service.complete_file_processing(
             file_id=file_id,
             crs=dataset.crs,
             features=feature_measurements,
             summary=summary,
+            warnings=dataset.warnings,
         )
+
+        return file_info
 
     except Exception as e:
         await storage_service.mark_file_failed(file_id, str(e))
         raise
-
-@router.post(
-    "/",
-    response_model=FileInfoResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload and process a geospatial file",
-    description="Accepts .zip (Shapefile) or .kml. Performs magic byte inspection, SHA-256 deduplication, "
-                "dynamic UTM projection, and geometric metric calculations."
-)
-async def upload_geospatial_file(
-    file: UploadFile = File(...),
-):
-    filename = file.filename or "unknown"
-    suffix = Path(filename).suffix.lower()
-
-    if suffix not in settings.ALLOWED_EXTENSIONS:
-        raise FileFormatError(
-            f"Unsupported file extension '{suffix}'. Only .zip (Shapefiles) and .kml files are supported."
-        )
-
-    file_id = storage_service.generate_id()
-    saved_path = settings.UPLOAD_DIR / f"{file_id}_{filename}"
-
-    # Stream to disk
-    try:
-        with open(saved_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise FileFormatError(f"Failed to stream uploaded file: {str(e)}")
-
-    # Deep magic bytes validation
-    _validate_magic_bytes(saved_path, suffix)
-
-    # Compute SHA-256
-    file_hash = storage_service.compute_sha256(saved_path)
-    file_size = saved_path.stat().st_size
-
-    # Check for deduplication (Idempotent response)
-    existing = await storage_service.find_existing_by_hash(file_hash)
-    if existing:
-        # File was already processed previously
-        saved_path.unlink(missing_ok=True)
-        return existing
-
-    # Create Initial Processing Record
-    file_type = "Shapefile (.zip)" if suffix == ".zip" else "KML"
-    await storage_service.create_file_record(
-        file_id=file_id,
-        filename=filename,
-        file_type=file_type,
-        file_size_bytes=file_size,
-        file_hash=file_hash,
-    )
-
-    # Process immediately (fast-path)
-    await process_geospatial_file_task(saved_path, file_id, suffix)
-
-    # Retrieve and return completed record
-    info = await storage_service.get_file_info(file_id)
-    if not info:
-        raise FileFormatError("Failed to retrieve file record after processing.")
-    return info
 
 @router.get(
     "/{id}/",

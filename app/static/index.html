@@ -322,6 +322,16 @@
       renderTable(loadedFeatures);
     }
 
+    function esc(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     function renderMapLayers(features) {
       geoJsonLayerGroup.clearLayers();
 
@@ -329,7 +339,7 @@
         type: 'FeatureCollection',
         features: features.map(f => ({
           type: 'Feature',
-          geometry: f.geometry,
+          geometry: f.geometry_wgs84 || f.geometry,
           properties: {
             ...f.properties,
             feature_id: f.feature_id,
@@ -355,11 +365,11 @@
         onEachFeature: function(feat, l) {
           l.bindPopup(`
             <div style="font-family: sans-serif; color: #0f172a;">
-              <b style="color: #0284c7;">Feature:</b> ${feat.properties.feature_id}<br/>
-              <b>Type:</b> ${feat.properties.geometry_type}<br/>
-              <b>Measurement:</b> <span style="font-weight: 700; color: #059669;">${feat.properties.formatted_measurement}</span><br/>
-              <b>Projection:</b> <span style="font-size: 11px;">${feat.properties.projected_crs}</span><br/>
-              ${feat.properties.distortion ? `<b>Distortion:</b> ${feat.properties.distortion}%` : ''}
+              <b style="color: #0284c7;">Feature:</b> ${esc(feat.properties.feature_id)}<br/>
+              <b>Type:</b> ${esc(feat.properties.geometry_type)}<br/>
+              <b>Measurement:</b> <span style="font-weight: 700; color: #059669;">${esc(feat.properties.formatted_measurement)}</span><br/>
+              <b>Projection:</b> <span style="font-size: 11px;">${esc(feat.properties.projected_crs)}</span><br/>
+              ${feat.properties.distortion ? `<b>Distortion:</b> ${esc(feat.properties.distortion)}%` : ''}
             </div>
           `);
         }
@@ -409,14 +419,14 @@
         const dist = adv && adv.distortion_percentage !== null ? `${adv.distortion_percentage}%` : '0.00%';
 
         tr.innerHTML = `
-          <td class="px-4 py-3 font-medium text-white">${f.feature_id}</td>
-          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${f.geometry_type}</span></td>
-          <td class="px-4 py-3 text-slate-400 text-[11px]">${f.projected_crs || 'N/A'}</td>
-          <td class="px-4 py-3 text-slate-300">${f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE'}</td>
-          <td class="px-4 py-3 text-emerald-400 font-bold">${f.measurement ? (f.measurement.formatted || 'N/A') : 'N/A'}</td>
-          <td class="px-4 py-3 text-cyan-400">${geoVal}</td>
-          <td class="px-4 py-3 text-amber-400">${dist}</td>
-          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[10px] ${f.status === 'SUCCESS' ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}">${f.status}</span></td>
+          <td class="px-4 py-3 font-medium text-white">${esc(f.feature_id)}</td>
+          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${esc(f.geometry_type)}</span></td>
+          <td class="px-4 py-3 text-slate-400 text-[11px]">${esc(f.projected_crs || 'N/A')}</td>
+          <td class="px-4 py-3 text-slate-300">${esc(f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE')}</td>
+          <td class="px-4 py-3 text-emerald-400 font-bold">${esc(f.measurement ? (f.measurement.formatted || 'N/A') : 'N/A')}</td>
+          <td class="px-4 py-3 text-cyan-400">${esc(geoVal)}</td>
+          <td class="px-4 py-3 text-amber-400">${esc(dist)}</td>
+          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[10px] ${f.status === 'SUCCESS' ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}">${esc(f.status)}</span></td>
         `;
         tbody.appendChild(tr);
       });
