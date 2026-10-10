@@ -1,21 +1,18 @@
-version: '3.8'
-
 services:
-  geospatial-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: aereo-geospatial-measurement-api
+  api:
+    build: .
     ports:
       - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
+      LOG_LEVEL: INFO
+      MAX_UPLOAD_SIZE_MB: "50"
+      # Swap for PostgreSQL by adding `asyncpg` to requirements.txt, e.g.:
+      # DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/geo
     volumes:
-      - ./uploads:/app/uploads
-      - ./data_store:/app/data_store
+      - geo_data:/app/data_store
+      - geo_uploads:/app/uploads
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+
+volumes:
+  geo_data:
+  geo_uploads:

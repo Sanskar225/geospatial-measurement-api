@@ -1,419 +1,498 @@
-# 🛰️ Enterprise Geospatial File Measurement & Intelligence Platform
+# Geospatial File Measurement API
 
-[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![Framework](https://img.shields.io/badge/Framework-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Database](https://img.shields.io/badge/ORM-SQLAlchemy%20Async-red.svg)](https://www.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Tests-25%2F25%20Passed-brightgreen.svg)]()
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue.svg)](https://github.com/)
+A FastAPI backend that accepts a **Shapefile (`.zip`)**, **KML** or **KMZ**, extracts every feature and returns
+**area** (polygons) and **length** (lines) in metres.
 
-A high-performance, production-grade geospatial service engineered for **vector feature extraction, dynamic CRS metric projection, and dual geometric measurement (Planar UTM + Geodesic WGS-84)**. Built specifically to handle aerial drone survey orthomosaics, parcel boundaries, and utility corridors in **ESRI Shapefile archives (`.zip`)**, **Keyhole Markup Language (`.kml`)**, and compressed **KMZ archives (`.kmz`)**.
+The part that is easy to get wrong in geospatial code is the coordinate system, so that is where most of the
+engineering went: measurements are **never** taken in lat/lon degrees, and they are also not blindly taken in whatever
+projected CRS the file happens to use (see [CRS handling](#crs-handling)). Every planar number is cross-checked against
+a geodesic calculation on the WGS-84 ellipsoid and the difference is reported.
 
----
+**What you get**
 
-## 📑 Table of Contents
-- [Enterprise Capabilities](#-enterprise-capabilities)
-- [System Architecture](#-system-architecture)
-- [CRS & Projection Engineering](#-crs--projection-engineering)
-- [Database & Persistence Model](#-database--persistence-model)
-- [Project Structure](#-project-structure)
-- [Quickstart & Setup](#-quickstart--setup)
-- [API Reference & Examples](#-api-reference--examples)
-- [Design Decisions & Trade-Offs](#-design-decisions--trade-offs)
-- [Learnings & Future Scope](#-learnings--future-scope)
+- The three required endpoints (`POST /api/files/`, `GET /api/files/{id}/`, `GET /api/files/{id}/measurements/`) plus
+  list, streamed GeoJSON/CSV export and delete.
+- A local metric projection chosen per feature (UTM, UPS near the poles), with a geodesic ground-truth check.
+- Bad features never fail a file: each feature carries its own `status` and `notes`.
+- Safe by default: size limits, zip-bomb and XXE protection, no path traversal, CSV-injection-safe export.
+- Large files can be processed in the background (`?background=true`) and polled.
+- 189 automated tests (97 % line coverage), lint/format checks and CI.
+- A small map dashboard at `/` for trying it out.
+- A short note on [how this lines up with Aereo Cloud](#how-this-maps-to-aereo-cloud) and what I would build next.
 
 ---
 
-## 🌟 Enterprise Capabilities
+## How this maps to Aereo Cloud
 
-1. **Multi-Format Vector Ingestion & Security Hardening**:
-   - ESRI Shapefile Archives (`.zip` containing `.shp`, `.shx`, `.dbf`, `.prj`).
-   - OpenGIS KML 2.2 (`.kml`) with support for Polygons (including interior exclusion rings/holes), LineStrings, Points, and MultiGeometries.
-   - **Deep Header Inspection**: Magic bytes validation prevents file spoofing.
-   - **Directory Traversal Protection**: Guard against Zip-Slip vulnerabilities.
-   - **XXE Injection Defense**: XML processing secured via `defusedxml`.
-2. **Mathematically Rigorous CRS Handling**:
-   - Zero raw geographic degree calculations ($^{\circ} \neq \text{meters}$).
-   - Automated centroid extraction dynamically re-projects coordinates into the optimal **Universal Transverse Mercator (UTM)** metric coordinate system ($m$).
-   - **Geodesic Ground Truth**: Employs `pyproj.Geod` over the WGS-84 reference ellipsoid to calculate ellipsoidal measurements and compute **distortion percentage variance ($\Delta\%$)**.
-3. **Database Persistence & SHA-256 Deduplication**:
-   - Fully persistent **SQLAlchemy Async ORM** backing (SQLite / PostgreSQL).
-   - Cryptographic SHA-256 file hashing ensures idempotent uploads—identical files are deduplicated without redundant compute.
-4. **Data Exports & Feature Filtering**:
-   - Server-side pagination (`limit`, `offset`) and geometry filtering (`?geometry_type=Polygon`).
-   - Direct export to **GeoJSON FeatureCollection** (`/api/files/{id}/export?format=geojson`).
-   - Direct export to **CSV report** (`/api/files/{id}/export?format=csv`).
-5. **Interactive Aereo Drone Visualization Dashboard**:
-   - Built-in dark-mode Leaflet web viewer (`http://localhost:8000`) with:
-     - Street and high-resolution **Esri Drone Satellite Basemap** toggle.
-     - Real-time vector rendering, interactive popups, and export buttons.
-     - Pre-loaded sample datasets for instant one-click testing.
+The brief is the assignment; this section is how its pieces line up with what Aereo has said publicly about
+**Aereo Cloud** (drone data in, 2D/3D maps, measurements and analytics out). It uses public sources only (listed at
+the end); I have no inside knowledge of Aereo's stack, so the right-hand column is my reading, not a claim about
+your system.
+
+| What Aereo says publicly | Where this repo already helps |
+| ------------------------ | ----------------------------- |
+| Aereo Cloud imports **SHP, KML**, TIFF, MBTiles and CSV and works with multiple coordinate systems | Shapefile (`.zip`), KML and KMZ parsers behind a registry (`app/services/parsers/`). The CRS is read from the `.prj` and never silently assumed. A new format is one class. |
+| Markets in India, the Gulf (partnership with [Seed Group](https://seedgroup.com/news/seed-group-partners-with-indian-commercial-drone-innovator-aereo-to-elevate-smart-city-initiatives-across-mena/)) and global mining (partnership with [Datamine](https://im-mining.com/?p=112195)) | The metric CRS follows the feature: UTM zone per feature, checked against the ellipsoid for India, UAE, South Africa, Australia, Chile and the Norway zone exception (`tests/test_api.py::TestGlobalCoverage`). |
+| A **Measure** module (cut-fill and stockpile volumes from surface models), with accuracy as a selling point | Area and length in metres, each cross-checked against a geodesic value with the difference reported per feature, so a poor projection is visible instead of hidden. |
+| Large survey archives (Aereo's own figures: 3,750+ mine surveys) and a **Share** module | Paginated results, streamed GeoJSON/CSV export, background processing, SHA-256 de-duplication. |
+| Enterprise customers and a role that mentions production systems and authentication | One error shape, request ids, `/health`, limits for hostile files, CI and tests. Authentication is a documented gap under [Known limitations](#known-limitations). |
+
+**Sources:** [Aereo Cloud for mining](https://resources.aereo.io/) (import formats, measurement features) ·
+[JSW Ventures on Aereo](https://www.jswvc.com/aereo) (customers, software-led strategy) ·
+[Series B coverage](https://www.geospatialworld.net/news/aereo-secures-15-million-in-series-b-funding-round/)
+(customers and programmes) · [Datamine partnership, Oct 2025](https://im-mining.com/?p=112195) ·
+[Seed Group partnership](https://seedgroup.com/news/seed-group-partners-with-indian-commercial-drone-innovator-aereo-to-elevate-smart-city-initiatives-across-mena/).
 
 ---
 
-## 🏗️ System Architecture
+## Setup
 
-```mermaid
-flowchart TD
-    Client(["Client / Web Dashboard"]) -->|POST /api/files/ (.zip / .kml)| Endpoint["Upload Endpoint (endpoints.py)"]
-    
-    subgraph Security_Ingestion ["1. Security & Deduplication"]
-        Endpoint --> MagicBytes["Magic Bytes Inspection"]
-        MagicBytes --> HashCalc["Compute SHA-256 Hash"]
-        HashCalc --> CheckDup{"Already in DB?"}
-        CheckDup -->|Yes| InstantReturn["Return Existing Record (Idempotent)"]
-        CheckDup -->|No| InitRecord["Create DB Record (Status: PROCESSING)"]
-    end
+Requires **Python 3.11+** (developed and tested on 3.12). No system libraries are needed: Shapely and PyProj ship
+wheels that bundle GEOS and PROJ.
 
-    subgraph Parsing ["2. Defensive Parsing"]
-        InitRecord --> RouteParser{Format}
-        RouteParser -->|".zip"| ShpParser["ShapefileParser (pyshp)"]
-        RouteParser -->|".kml"| KmlParser["KMLParser (defusedxml)"]
-        ShpParser --> StandardGeoms["Standardized GeoJSON Feature Set"]
-        KmlParser --> StandardGeoms
-    end
-
-    subgraph CRS_Engine ["3. Projection & GIS Engine"]
-        StandardGeoms --> CRSService["CRSService (pyproj)"]
-        CRSService --> CentroidCalc["Centroid Calculation (Lon, Lat)"]
-        CentroidCalc --> AutoUTM["Dynamic UTM Zone Detection (EPSG:326XX / 327XX)"]
-        AutoUTM --> Transform["Vectorized Coordinate Reprojection"]
-        Transform --> GeodesicVerif["WGS-84 Ellipsoidal Geodesic Calculation"]
-    end
-
-    subgraph Measurements ["4. Metric Computation"]
-        GeodesicVerif --> MeasService["MeasurementService (shapely 2.x)"]
-        MeasService --> GeomBranch{"Geometry"}
-        GeomBranch -->|Polygon| AreaCalc["Planar Area (m², ha, km²) + Perimeter + Distortion Δ%"]
-        GeomBranch -->|LineString| LenCalc["Planar Length (m, km) + Geodesic Length + Distortion Δ%"]
-        GeomBranch -->|Point| PointHandle["Zero-Dimension Safe Handler (None)"]
-        GeomBranch -->|Malformed| HealValid["Auto-Healing via make_valid()"]
-    end
-
-    subgraph Persistence ["5. Async Relational DB Layer"]
-        AreaCalc --> DBCommit[("SQLAlchemy Database (geospatial.db)")]
-        LenCalc --> DBCommit
-        PointHandle --> DBCommit
-        HealValid --> DBCommit
-        DBCommit --> ReadyResponse["Final JSON Response (Status: COMPLETED)"]
-    end
-```
-
----
-
-## 🌐 CRS & Projection Engineering
-
-### The Geographic Coordinate Fallacy
-Geographic Coordinate Systems (**EPSG:4326 / WGS 84**) measure locations as spherical angular coordinates $(\lambda, \phi)$ in degrees:
-- A degree of longitude at the equator is $\sim 111.32\text{ km}$, but reduces to $0\text{ km}$ at the poles according to:
-  $$\Delta x = 111.32 \times \cos(\text{latitude}) \text{ km}$$
-- Calculating distance or area directly using Euclidean geometry on degrees produces geographically erroneous values.
-
-### The Aereo UTM Strategy
-1. **Centroid Coordinate Extraction**: Determine the center longitude $\lambda$ and latitude $\phi$.
-2. **Zone Formula**:
-   $$\text{Zone} = \left\lfloor \frac{\lambda + 180^{\circ}}{6} \right\rfloor + 1$$
-   - Northern Hemisphere ($\phi \ge 0$): $\text{EPSG} = 32600 + \text{Zone}$
-   - Southern Hemisphere ($\phi < 0$): $\text{EPSG} = 32700 + \text{Zone}$
-3. **Planar Transformation & Geodesic Benchmarking**:
-   Coordinates are projected into orthogonal metric coordinates $(x, y)$, and cross-validated with geodesic curves over the WGS-84 ellipsoid:
-   $$\text{Distortion } \Delta\% = \left| \frac{\text{Projected} - \text{Geodesic}}{\text{Geodesic}} \right| \times 100$$
-
----
-
-## 💾 Database & Persistence Model
-
-```mermaid
-erDiagram
-    GEOSPATIAL_FILES ||--o{ GEOSPATIAL_FEATURES : contains
-    
-    GEOSPATIAL_FILES {
-        string id PK "8-char unique identifier"
-        string filename "Uploaded filename"
-        string file_type "Shapefile (.zip) or KML"
-        int file_size_bytes "Size in bytes"
-        string file_hash_sha256 "SHA-256 hash for deduplication"
-        string crs "Detected source CRS"
-        int feature_count "Total features"
-        string status "PENDING | PROCESSING | COMPLETED | FAILED"
-        int progress_pct "0 to 100 progress"
-        string summary_json "Aggregated area/length metrics"
-        datetime created_at "Timestamp"
-    }
-
-    GEOSPATIAL_FEATURES {
-        int id PK "Autoincrement ID"
-        string file_id FK "References GEOSPATIAL_FILES.id"
-        int feature_index "Feature sequence number"
-        string feature_identifier "Name or attribute ID"
-        string geometry_type "Polygon | LineString | Point"
-        text geometry_geojson "GeoJSON representation"
-        text properties_json "Extracted attribute dictionary"
-        string source_crs "Input CRS"
-        string projected_crs "Projected UTM CRS"
-        string measurement_type "area | length | none"
-        float measurement_value "Primary value in SI units"
-        string measurement_unit "square_meters | meters | none"
-        float geodesic_value "Ellipsoidal ground truth"
-        float distortion_percentage "Planar vs Geodesic variance"
-        string status "SUCCESS | UNSUPPORTED"
-    }
-```
-
----
-
-## 📂 Project Structure
-
-```
-geospatial-measurement-api/
-│
-├── app/
-│   ├── main.py                     # Lifespan database startup, timing middleware, routes
-│   ├── core/
-│   │   ├── config.py               # Settings, directories, thresholds
-│   │   ├── database.py             # Async SQLAlchemy engine & session factory
-│   │   └── exceptions.py           # Custom HTTP exceptions
-│   ├── models/
-│   │   ├── db_models.py            # SQLAlchemy ORM models (Files & Features)
-│   │   └── schemas.py              # Pydantic v2 serialization schemas
-│   ├── services/
-│   │   ├── crs_service.py          # Dynamic UTM engine & pyproj geodesic validator
-│   │   ├── measurement_service.py  # Area/length calculations & distortion metrics
-│   │   ├── storage_service.py      # Async repository with deduplication & export logic
-│   │   └── parsers/
-│   │       ├── base.py             # Dataclass interfaces
-│   │       ├── shapefile_parser.py # Secure zip extractor & pyshp reader
-│   │       └── kml_parser.py       # DefusedXML parser for KML Placemarks & rings
-│   ├── static/
-│   │   └── index.html              # Dark-mode dashboard with satellite basemap & exports
-│   └── api/
-│       └── v1/
-│           └── endpoints.py        # REST routes (Upload, Status, Measurements, Exports)
-│
-├── sample_data/                    # Pre-generated sample files
-│   ├── survey_sample.kml           # Valid KML (Polygons with holes, Lines, GCPs)
-│   ├── sample_shapefile.zip        # Valid Shapefile archive with WGS-84 .prj
-│   └── generate_samples.py         # Sample data generator
-│
-├── tests/                          # 21/21 Passing test suite
-│   ├── conftest.py                 # Async DB session initialization fixture
-│   ├── test_api.py                 # Integration tests (Upload, Deduplication, Exports, Headers)
-│   ├── test_crs_service.py         # Unit tests (UTM math, projection, geodesic verification)
-│   ├── test_parsers.py             # Unit tests (KML & Shapefile parsing, corrupted zips)
-│   └── test_measurements.py        # Unit tests (Polygon area, Line length, Point bypass)
-│
-├── .github/workflows/
-│   └── ci.yml                      # Automated GitHub Actions test pipeline
-├── Dockerfile                      # Production slim container image
-├── docker-compose.yml              # One-command orchestration
-├── requirements.txt                # Pinned dependencies
-├── pytest.ini                      # Pytest configuration
-└── README.md                       # Comprehensive system documentation
-```
-
----
-
-## 🚀 Quickstart & Setup
-
-### Option A: Local Virtual Environment Setup
-
-1. **Clone repository**:
-   ```bash
-   git clone <repo-url>
-   cd geospatial-measurement-api
-   ```
-
-2. **Create virtual environment**:
-   ```bash
-   # Windows
-   py -3.12 -m venv .venv
-   .\.venv\Scripts\activate
-
-   # Linux / macOS
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run the Automated Test Suite**:
-   ```bash
-   pytest -v
-   ```
-   *(Expected: 21 passed in ~1.8s)*
-
-5. **Start Application Server**:
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
-
-6. **Open in Browser**:
-   - 🗺️ **Visual Dashboard**: [http://localhost:8000/](http://localhost:8000/)
-   - 📖 **Swagger OpenAPI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-   - 📄 **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
----
-
-### Option B: Docker Setup
+### Run locally
 
 ```bash
-docker compose up --build
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+
+uvicorn app.main:app --reload
 ```
-Everything starts up automatically inside an isolated Debian-based container on port `8000`.
+
+| URL                            | What                                   |
+| ------------------------------ | -------------------------------------- |
+| http://localhost:8000/         | Map dashboard (upload + visualise)     |
+| http://localhost:8000/docs     | Swagger UI (try every endpoint)        |
+| http://localhost:8000/redoc    | ReDoc                                  |
+| http://localhost:8000/health   | Liveness + database check              |
+
+Try it with the bundled samples:
+
+```bash
+curl -F "file=@sample_data/survey_sample.kml" http://localhost:8000/api/files/
+# -> {"id": "492eb6d0...", "status": "COMPLETED", "feature_count": 4, ...}
+
+curl http://localhost:8000/api/files/<id>/measurements/
+```
+
+`sample_data/` contains a KML (polygon, line, point, polygon-with-hole), a Shapefile in EPSG:4326 and a Shapefile in
+EPSG:32643 (UTM 43N, metres).
+
+### Docker
+
+```bash
+docker compose up --build          # http://localhost:8000
+```
+
+The image runs as a non-root user; the SQLite database and uploads live in named volumes.
+
+### Tests and checks
+
+```bash
+pytest --cov=app --cov-report=term-missing
+ruff check . && ruff format --check .
+```
+
+### Configuration
+
+All settings are environment variables (or a `.env` file, see `.env.example`).
+
+| Variable                  | Default                     | Meaning                                                        |
+| ------------------------- | --------------------------- | -------------------------------------------------------------- |
+| `DATABASE_URL`            | SQLite in `data_store/`     | Any SQLAlchemy async URL                                       |
+| `MAX_UPLOAD_SIZE_MB`      | `50`                        | Upload size limit (HTTP 413 above it)                          |
+| `MAX_UNCOMPRESSED_SIZE_MB`| `250`                       | Zip-bomb guard for archives                                    |
+| `MAX_ZIP_ENTRIES`         | `500`                       | Zip-bomb guard for archives                                    |
+| `MAX_FEATURES`            | `250000`                    | Features per file                                              |
+| `DEDUPLICATE_UPLOADS`     | `true`                      | Return the existing record for byte-identical uploads          |
+| `KEEP_UPLOADED_FILES`     | `true`                      | Keep the original upload after processing                      |
+| `DISTORTION_WARNING_PCT`  | `0.5`                       | Planar-vs-geodesic gap that triggers a warning note            |
+| `CORS_ORIGINS`            | `["*"]`                     | JSON list; restrict this in production                         |
+| `LOG_LEVEL`               | `INFO`                      |                                                                |
 
 ---
 
-## 📡 API Reference & Examples
+## API
 
-### 1. Upload Geospatial File
-`POST /api/files/`
+| Method   | Path                              | Purpose                                                   |
+| -------- | --------------------------------- | --------------------------------------------------------- |
+| `POST`   | `/api/files/`                     | Upload and process a file                                 |
+| `GET`    | `/api/files/{id}/`                | File info and processing status                           |
+| `GET`    | `/api/files/{id}/measurements/`   | Per-feature measurements + file summary                   |
+| `GET`    | `/api/files/{id}/export`          | Download results as GeoJSON or CSV (streamed)             |
+| `GET`    | `/api/files/`                     | List files (`limit`, `offset`, `X-Total-Count` header)    |
+| `DELETE` | `/api/files/{id}/`                | Delete the record, its features and the stored upload     |
+| `GET`    | `/health`                         | Liveness + database check (503 if the DB is down)         |
+
+### Upload: `POST /api/files/`
+
+`multipart/form-data` with a `file` field: a `.zip` containing a Shapefile, a `.kml`, or a `.kmz`.
 
 ```bash
-curl -X POST "http://localhost:8000/api/files/" \
-  -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@sample_data/survey_sample.kml"
+curl -F "file=@survey.kml" http://localhost:8000/api/files/
 ```
 
-**Response (`201 Created`):**
 ```json
 {
-  "id": "e4f8b91a",
-  "filename": "survey_sample.kml",
+  "id": "5c1e0a77b8f94d0e9d3a4b2f6a8c1d20",
+  "filename": "survey.kml",
   "feature_count": 4,
   "crs": "EPSG:4326",
   "status": "COMPLETED",
   "progress_pct": 100,
   "file_type": "KML",
-  "file_size_bytes": 3280,
-  "file_hash_sha256": "3a8b29f0c294...",
-  "uploaded_at": "2026-10-08T15:20:00+00:00"
+  "file_size_bytes": 2734,
+  "file_hash_sha256": "e94bf49d...",
+  "error_message": null,
+  "warnings": [],
+  "uploaded_at": "2026-10-08T21:18:02.158849Z"
 }
 ```
 
----
+| Status | When                                                                                          |
+| ------ | --------------------------------------------------------------------------------------------- |
+| `201`  | Processed. `Location` header points at the new resource.                                      |
+| `200`  | An identical file (same SHA-256) was already processed; the existing record is returned.       |
+| `202`  | `?background=true`: accepted; poll `GET /api/files/{id}/` until `status` is `COMPLETED`.      |
 
-### 2. Get File Information
-`GET /api/files/{id}/`
+`status` moves `PENDING → PROCESSING → COMPLETED` (or `FAILED` with an `error_message`). `warnings` holds non-fatal
+findings, for example *"no .prj; coordinates look like lon/lat so EPSG:4326 was assumed"*.
 
-```bash
-curl -X GET "http://localhost:8000/api/files/e4f8b91a/"
-```
+### Measurements: `GET /api/files/{id}/measurements/`
 
-**Response (`200 OK`):**
+Query parameters: `geometry_type` (e.g. `Polygon`), `status` (e.g. `INVALID_COORDINATES`), `limit` (1-1000, default
+100), `offset`. The `summary` always covers the whole file; `features` honours filters and pagination.
+
 ```json
 {
-  "id": "e4f8b91a",
-  "filename": "survey_sample.kml",
-  "feature_count": 4,
-  "crs": "EPSG:4326",
-  "status": "COMPLETED"
-}
-```
-
----
-
-### 3. Get Feature Measurements & Advanced Metrics
-`GET /api/files/{id}/measurements/?geometry_type=Polygon&limit=10&offset=0`
-
-```bash
-curl -X GET "http://localhost:8000/api/files/e4f8b91a/measurements/"
-```
-
-**Sample Response (`200 OK`):**
-```json
-{
-  "id": "e4f8b91a",
-  "filename": "survey_sample.kml",
+  "id": "5c1e0a77b8f94d0e9d3a4b2f6a8c1d20",
+  "filename": "survey.kml",
   "crs": "EPSG:4326",
   "summary": {
-    "total_features": 4,
-    "polygon_count": 2,
-    "linestring_count": 1,
-    "point_count": 1,
-    "unsupported_count": 0,
-    "total_area_sq_meters": 1354820.50,
-    "total_area_hectares": 135.4820,
-    "total_length_meters": 3120.45,
-    "total_length_kilometers": 3.1205
+    "total_features": 4, "polygon_count": 2, "linestring_count": 1, "point_count": 1,
+    "unsupported_count": 0, "failed_count": 0,
+    "total_area_sq_meters": 3472966.96, "total_area_hectares": 347.2967,
+    "total_length_meters": 3106.39, "total_length_kilometers": 3.1064,
+    "average_polygon_area_sq_m": 1736483.48, "average_linestring_length_m": 3106.39
   },
   "features": [
     {
-      "feature_id": "Solar Plant Sector A",
+      "feature_id": "0",
+      "index": 0,
       "geometry_type": "Polygon",
-      "geometry": {
-        "type": "Polygon",
-        "coordinates": [[[77.585, 12.97], [77.595, 12.97], [77.595, 12.98], [77.585, 12.98], [77.585, 12.97]]]
-      },
+      "geometry": { "type": "Polygon", "coordinates": ["..."] },
+      "geometry_wgs84": null,
       "crs": "EPSG:4326",
-      "projected_crs": "EPSG:32643 (UTM Zone 43N)",
-      "properties": {
-        "Project": "Aereo CleanEnergy Phase 1"
-      },
+      "projected_crs": "EPSG:32643",
+      "properties": { "name": "Solar Plant Sector A", "Project": "Aereo CleanEnergy Phase 1" },
       "measurement": {
         "measurement_type": "area",
-        "value": 1184200.25,
+        "value": 1201674.84,
         "unit": "square_meters",
-        "formatted": "1,184,200.25 m² (118.4200 ha)",
-        "alternative_units": {
-          "hectares": 118.42,
-          "perimeter_meters": 4380.20
-        },
+        "formatted": "1,201,674.84 m² (120.1675 ha | 1.2017 km²)",
+        "alternative_units": { "hectares": 120.1675, "square_kilometers": 1.201675, "acres": 296.9403 },
         "advanced_metrics": {
-          "geodesic_value": 1184145.80,
-          "distortion_percentage": 0.0046,
-          "perimeter_meters": 4380.20,
+          "geodesic_value": 1200289.84,
+          "distortion_percentage": 0.1154,
+          "perimeter_meters": 4385.05,
           "vertex_count": 5
         }
       },
       "status": "SUCCESS",
-      "notes": "Area calculated via metric projected CRS transformation with WGS-84 geodesic verification."
+      "notes": []
     }
-  ]
+  ],
+  "total_count": 4, "limit": 100, "offset": 0, "has_more": false
 }
 ```
 
+Field notes:
+
+- `geometry` is GeoJSON in the file's own CRS (`crs`). `geometry_wgs84` is the same geometry in lon/lat for maps and is
+  only present when the source CRS is not already WGS-84.
+- `value` is the planar result in `projected_crs`; `geodesic_value` is the same measurement on the ellipsoid and
+  `distortion_percentage` is the gap between the two.
+- Points have `measurement_type: "none"` and no value (no measurement is required for them).
+
+Per-feature `status`:
+
+| Status                 | Meaning                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `SUCCESS`              | Measured (or a point, which has nothing to measure)                          |
+| `UNSUPPORTED_GEOMETRY` | e.g. a `GeometryCollection` mixing polygons and points; reported, not measured |
+| `EMPTY_GEOMETRY`       | Null shape / no coordinates                                                  |
+| `INVALID_GEOMETRY`     | Could not be parsed (e.g. malformed KML coordinate); `notes` says why        |
+| `INVALID_COORDINATES`  | Outside valid lon/lat after transformation, usually a wrong or missing CRS   |
+| `CALCULATION_ERROR`    | Unexpected failure while measuring this feature                              |
+
+### Export: `GET /api/files/{id}/export?format=geojson|csv`
+
+Streamed in batches, so memory stays flat for large files. GeoJSON follows RFC 7946 (geometries are always lon/lat,
+measurements ride along as `measure_*` properties). CSV cells that start with `= + - @` are prefixed with `'` so a
+hostile feature name cannot become a spreadsheet formula.
+
+### Errors
+
+Every error has the same shape; `file_id` is included when a record exists, so a failed upload can still be inspected
+with `GET /api/files/{id}/`.
+
+```json
+{
+  "detail": "Layer 'parcels' has no usable .prj and its coordinates (500000.0, 1435000.0, 501000.0, 1436000.0) are not valid longitude/latitude values, so the CRS cannot be assumed. Add the .prj file to the archive.",
+  "error_code": "CRS_MISSING",
+  "file_id": "132a17cc4ef1491d98bcc30d7209da63"
+}
+```
+
+| HTTP | `error_code`                                                              | Cause                                            |
+| ---- | ------------------------------------------------------------------------- | ------------------------------------------------ |
+| 400  | `INVALID_FILE`                                                            | Corrupt/empty file, wrong content for the extension |
+| 404  | `FILE_NOT_FOUND`                                                          | Unknown id                                       |
+| 409  | `FILE_NOT_READY`                                                          | Results requested while still processing         |
+| 413  | `FILE_TOO_LARGE`                                                          | Over `MAX_UPLOAD_SIZE_MB`                        |
+| 415  | `UNSUPPORTED_FILE_TYPE`                                                   | Extension is not `.zip`, `.kml` or `.kmz`        |
+| 422  | `CRS_MISSING`, `CRS_INVALID`, `COORDINATES_INVALID`, `FILE_PROCESSING_FAILED` | CRS problem, or results of a failed file     |
+| 500  | `PROCESSING_ERROR`, `INTERNAL_ERROR`                                      | Bug; details are logged, never returned          |
+
 ---
 
-### 4. Export Endpoints
-- **GeoJSON**: `GET /api/files/{id}/export?format=geojson`
-- **CSV**: `GET /api/files/{id}/export?format=csv`
+## Architecture
+
+### Structure
+
+```text
+app/
+├── main.py                  App factory, lifespan, CORS, /health, static dashboard
+├── api/
+│   ├── v1/endpoints.py      Thin HTTP handlers (parse request -> call service -> shape response)
+│   ├── errors.py            Domain exception -> JSON mapping
+│   ├── middleware.py        Request IDs, upload-size guard
+│   └── deps.py              Dependency injection (overridable in tests)
+├── core/                    config (env), database, logging, domain exceptions (no HTTP knowledge)
+├── models/
+│   ├── schemas.py           Pydantic models = the API contract
+│   └── db_models.py         SQLAlchemy tables
+├── repositories/
+│   └── file_repository.py   The only module that talks SQL
+└── services/
+    ├── file_service.py      Use-case orchestration: upload -> parse -> measure -> persist
+    ├── upload_storage.py    Streaming save, size cap, SHA-256, signature check, safe filenames
+    ├── parsers/             shapefile_parser, kml_parser, registry (extension -> parser)
+    ├── crs_service.py       CRS resolution, projection selection, transforms, geodesic maths
+    ├── measurement_service.py   Per-feature area / length / status, file summary
+    └── export_service.py    GeoJSON / CSV formatting
+```
+
+Dependencies point one way: `api → services → repositories → db`. The geospatial code (`parsers`, `crs_service`,
+`measurement_service`) imports neither FastAPI nor SQLAlchemy, so it is unit-tested directly with plain Shapely
+geometries.
+
+```mermaid
+flowchart LR
+    Client --> API["api/ (FastAPI)"]
+    API --> FS["FileService"]
+    FS --> ST["UploadStorage"]
+    FS --> PR["Parsers (Shapefile, KML/KMZ)"]
+    FS --> MS["MeasurementService"]
+    MS --> CRS["CRSService"]
+    FS --> REPO["FileRepository"]
+    REPO --> DB[("SQLite / PostgreSQL")]
+    ST --> DISK[("uploads/")]
+```
+
+### File-processing flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as API
+    participant S as FileService
+    participant W as Worker thread
+    participant D as Database
+    C->>A: POST /api/files/ (multipart)
+    A->>S: register_upload()
+    S->>S: validate extension, stream to disk (size cap + SHA-256), check signature
+    S->>D: duplicate? return existing (200) : create PENDING record
+    alt default
+        A->>S: process()
+        S->>W: parse file (zip/KML in memory)
+        S->>W: measure every feature
+        S->>D: bulk insert features, status = COMPLETED
+        A-->>C: 201 + file info
+    else ?background=true
+        A-->>C: 202 + file info (PENDING)
+        Note over S,D: same process() runs after the response
+    end
+    C->>A: GET /api/files/{id}/measurements/
+```
+
+1. **Register**: the extension is checked first (415), then the upload is streamed to `uploads/<uuid><ext>` while
+   the size limit is enforced and the SHA-256 computed in one pass. The client's filename is never used as a path.
+   A magic-byte check rejects, e.g., a PNG renamed to `.kml`. Identical, already processed bytes return the existing
+   record.
+2. **Parse** (worker thread): the parser for the extension reads the file and yields `ParsedFeature`s (index, id,
+   geometry, attributes, CRS). Zips are read in memory, nothing is extracted to disk. Features that cannot be
+   turned into a geometry are kept with a reason instead of being dropped.
+3. **Measure** (worker thread): one `FeatureMeasurement` per feature, then a file summary.
+4. **Persist**: features are bulk-inserted and the file flips to `COMPLETED` in a single transaction. CPU-bound work
+   runs via `asyncio.to_thread`, so the event loop keeps serving other requests.
+5. Any failure marks the file `FAILED` with a message, removes the stored upload and returns a structured error.
+   Files left `PENDING`/`PROCESSING` by a crash or restart are failed on startup so clients never poll forever.
+
+### Measurement flow
+
+For each feature:
+
+1. Empty / unparseable geometry → `EMPTY_GEOMETRY` / `INVALID_GEOMETRY` with a note.
+2. Force 2D, convert to lon/lat (WGS-84) and validate the range (catches wrong or missing CRS).
+3. Point → no measurement. `GeometryCollection` and friends → `UNSUPPORTED_GEOMETRY` with the member types listed.
+4. Polygons: if invalid (e.g. bow-tie) repair with `make_valid()` and add a note.
+5. Choose the metric CRS from the centre of the feature's bounding box, transform, and take `area` / `length`
+   (and perimeter for polygons).
+6. Repeat on the WGS-84 ellipsoid with `pyproj.Geod`; report `geodesic_value` and `distortion_percentage`. If the
+   gap exceeds `DISTORTION_WARNING_PCT`, add a note recommending the geodesic value.
+7. Any exception in steps 2-6 is caught and recorded on that feature only.
+
+### CRS handling
+
+Three rules:
+
+1. **Resolve, never guess.** Each layer's CRS comes from its `.prj` (ESRI WKT) or is WGS-84 for KML (the KML
+   specification). WKT is matched to an EPSG code when possible (`EPSG:4326`, `EPSG:32643`, ...), otherwise reported
+   as `CUSTOM:<name>`. A missing `.prj` is only tolerated when the coordinates are plausible lon/lat (then WGS-84 is
+   assumed *and reported as a warning*); otherwise the upload is rejected with `CRS_MISSING`.
+2. **Always measure in a local metric CRS.** The zone is chosen from the feature's own location: UTM
+   (`EPSG:326xx` / `327xx`, including the Norway and Svalbard exceptions), or UPS beyond 84°N / 80°S. This also
+   applies to files that are already projected. `is_projected` does not mean "safe for area".
+3. **Verify against the ellipsoid.** `pyproj.Geod` gives a geodesic area/length for the same geometry. Polygon rings
+   are re-oriented first, because pyproj returns a signed area and only subtracts holes when exteriors are
+   counter-clockwise and holes clockwise.
+
+What this prevents:
+
+| Input                                  | Naive result                                         | This API                                          |
+| -------------------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
+| EPSG:4326 polygon                      | area in square degrees                               | m² in the local UTM zone                          |
+| Projected CRS in US survey feet        | feet² reported as m² (about 10.8x too large)         | reprojected, correct m²                           |
+| Web Mercator (EPSG:3857) at 60°N       | area inflated by 1/cos²φ (4x)                        | ground area                                       |
+| Already UTM, same zone                 | n/a                                                  | used as is (identity transform, no loss)          |
+| `.prj` missing, UTM-looking numbers    | treated as degrees, garbage output                   | `422 CRS_MISSING` with instructions               |
+| Latitude 200 (wrong CRS declared)      | NaN / nonsense                                       | `INVALID_COORDINATES` on that feature             |
+| Polygon with a hole                    | geodesic check adds the hole (27 % bogus "distortion") | hole subtracted, difference ≈ 0.1 %             |
+
+All of these are covered by regression tests.
+
+### Data model
+
+- `geospatial_files`: id, filename, type, size, SHA-256, CRS, feature count, status, progress, error, warnings, summary.
+- `geospatial_features`: one row per feature (`file_id`, `feature_index`, id, geometry as GeoJSON, WGS-84 geometry,
+  properties, CRS, projected CRS, status, notes, plus `measurement_type`/`measurement_value` as plain columns so
+  they can be filtered or sorted in SQL, and the full measurement payload as JSON).
+- Only portable column types are used, so the same schema works on SQLite and PostgreSQL.
 
 ---
 
-## 💡 Design Decisions & Trade-Offs
+## Design decisions
 
-| Decision | Chosen Architecture | Alternatives | Technical Rationale |
-| :--- | :--- | :--- | :--- |
-| **Framework** | **FastAPI** | Django / Flask | Native asynchronous I/O, Pydantic v2 data serialization, and automatic OpenAPI schema contract generation without heavy monolithic boilerplate. |
-| **Metric Projection** | **Automated Local UTM** | Web Mercator (EPSG:3857) | Web Mercator exhibits extreme area and distance distortion away from the equator ($> 400\%$ distortion near poles). UTM maintains $< 0.1\%$ scale error across 6-degree zones. |
-| **Database** | **SQLAlchemy Async + SQLite/Postgres** | Raw JSON Files / MongoDB | Relational integrity with foreign keys, indexing for fast filtering, and immediate readiness for enterprise PostGIS cloud backends. |
-| **Deduplication** | **SHA-256 Cryptographic Hash** | Name / Timestamp matching | Ensures true idempotency; large identical aerial surveys uploaded multiple times do not incur redundant CPU/memory workloads. |
-| **Parsing Engine** | **`pyshp` + `defusedxml`** | GDAL / OGR bindings | Native GDAL C++ binaries present substantial cross-platform packaging hurdles. Pure Python parsing eliminates C++ distribution faults while preserving 100% vector accuracy. |
-
----
-
-## 📈 Learnings & Future Scope
-
-### Learnings
-1. **Curvature and Distortion Constraints**: Understanding that no flat projection can preserve both shape and area simultaneously (Gauss's *Theorema Egregium*), and how local transverse Mercator zones provide the optimal compromise for aerial drone flights.
-2. **Namespace Agnosticism**: Standardizing unpredictable KML XML namespaces generated by varying commercial GIS and photogrammetry packages (Pix4D, DroneDeploy, DJI Terra).
-3. **Idempotent Microservices**: Implementing hash-based deduplication in file-processing pipelines to protect backend services from denial-of-service through repeat uploads.
-
-### Future Scope (Aereo Cloud Enterprise Scale)
-- **Distributed Celery + Redis Worker Queues**: Asynchronous offloading for massive vector datasets ($> 500,000$ vertices) with live WebSocket streaming updates.
-- **Direct S3 Multipart Presigned Uploads**: Eliminate server memory bottlenecks by allowing clients to upload multi-gigabyte survey orthomosaics straight to S3 buckets, triggering asynchronous ECS task workers.
-- **PostGIS Spatial R-Tree Indexing (`GIST`)**: Enable spatial topological queries (`ST_Intersects`, `ST_Contains`, `ST_Buffer`) directly in database engine.
-- **Cloud-Optimized Formats**: Direct streaming support for **FlatGeobuf**, **GeoParquet**, and **Cloud-Optimized GeoTIFFs (COG)**.
+| Decision | Why | Alternatives considered |
+| -------- | --- | ----------------------- |
+| **FastAPI** | Async uploads, request validation and OpenAPI docs come for free; the service has no need for Django's admin/auth/ORM migrations. | Django + DRF: better if this grows into a full platform with users and an admin. |
+| **Synchronous by default, optional `?background=true`** | The spec's flow is "upload → processed"; most files take milliseconds. Large files can use 202 + polling. | Always async: harder for simple clients. Queue (Celery/Arq): right at scale, see future scope. |
+| **Read zips in memory** | Removes Zip-Slip and temp-file cleanup; the uncompressed size and entry count are capped. | Extract to a temp dir (the common approach; needs path sanitising). |
+| **Always reproject to a local UTM zone** | One consistent, verifiable method for any input CRS. | Trust projected inputs (wrong for feet/Web Mercator); a single zone per file (worse for scattered features). |
+| **UTM + geodesic cross-check** | UTM is what surveyors expect and is within ~0.1 % inside a zone; the geodesic value exposes the cases where it is not. | Equal-area projection per feature (exact area, less familiar numbers); geodesic only (most accurate, but the brief asks for projected). |
+| **Per-feature status, never fail the whole file** | One bad Placemark in a 10 000-feature survey should not lose the other 9 999. | Reject the file on the first error. |
+| **Repair invalid polygons and say so** | Self-intersections are common in hand-digitised data. | Reject them; silently repair them. |
+| **Missing `.prj`: assume only when it is provably lon/lat** | Silent defaults give wrong areas without any error. | Always default to WGS-84 (what many tools do); always reject. |
+| **pyshp + Shapely + PyProj** | Pure wheels, no GDAL install, works from memory buffers, small image. | GeoPandas/pyogrio/Fiona (more formats, heavier, needs GDAL). |
+| **SQLite + GeoJSON in JSON columns** | Zero setup for a reviewer; portable to PostgreSQL. | PostGIS: the right next step for spatial queries, see future scope. |
+| **SHA-256 de-duplication** | Idempotent uploads; free hash from the streaming pass. | None (always reprocess). It is global, so multi-tenant use would scope it per tenant. |
+| **Domain exceptions without HTTP** | Core logic stays reusable and testable; one place maps errors to responses. | `HTTPException` everywhere (couples the domain to FastAPI). |
+| **Repository + service layers** | SQL in one place; business flow testable. | Queries inside endpoints. |
 
 ---
 
-## 👨‍💻 Author
-**Sanskar Sinha**  
-Full Stack & Scalable Systems Engineer  
-- **Email**: sanskarsinha225@gmail.com  
-- **LinkedIn**: [Sanskar Sinha](https://www.linkedin.com/)  
-- **GitHub**: [github.com/sanskar225](https://github.com/)
+## Testing
+
+```bash
+pytest --cov=app
+```
+
+- **CRS & measurement** are checked against independent references (spherical area formula, haversine, known
+  unit conversions), not against the code's own output.
+- **Parsers** cover the formats' real-world quirks: uppercase extensions, macOS `__MACOSX` entries, missing
+  `.prj`/`.shx`/`.dbf`, DBF dates and NaN, legacy encodings, null shapes, multi-layer zips, KML namespaces,
+  `SchemaData`, `MultiGeometry`, malformed coordinates, KMZ, XXE / billion-laughs, zip bombs.
+- **API tests** run the whole app (real SQLite, real files): the spec flow, pagination and filters, de-duplication,
+  every error path, size limits, path traversal, background mode, crash recovery, streamed exports, CSV injection.
+- **Worldwide coverage:** the same polygon is measured in six places (Bengaluru, Dubai, Johannesburg, the Pilbara, Chuquicamata, Bergen) and must land in the right UTM zone and within 0.4 % of the ellipsoid value.
+- CI runs lint, format check and tests on every push.
+
+---
+
+## Known limitations
+
+- Features crossing the antimeridian are not handled specially (the zone comes from the bbox centre).
+- `GeometryCollection`s are reported as unsupported rather than split into measurable parts.
+- Measurements are 2D. Z values are ignored (no surface/slope length).
+- Datum shifts use PROJ's built-in transformations without optional grid files; for old national datums the position
+  error can be metres, which is not what drives area, but matters for the map overlay.
+- Background tasks run inside the API process: they are not durable and assume a single replica. Crash recovery
+  marks interrupted files `FAILED`.
+- Starlette buffers multipart uploads before the endpoint runs. A `Content-Length` guard and a streaming size check
+  are in place, but a reverse-proxy limit (e.g. nginx `client_max_body_size`) is still recommended.
+- A file is parsed fully in memory (capped at `MAX_FEATURES`). Very large datasets need chunked processing.
+- No authentication or rate limiting; de-duplication is global.
+- Verified on SQLite only; PostgreSQL support is by design (portable types) but not tested here.
+
+---
+
+## Learnings
+
+- **"Projected" is not "metric", and "metric" is not "good for area".** A CRS can be in feet, or in metres but badly
+  distorted (Web Mercator). Reprojecting everything to a local zone and cross-checking against the ellipsoid removed
+  a whole class of silent errors.
+- **Silent defaults are the worst bugs.** A guessed CRS or a skipped vertex produces a plausible but wrong number.
+  Turning those into explicit errors, warnings and per-feature notes made the API's behaviour explainable.
+- **Libraries have sharp edges.** `pyproj`'s geodesic area depends on ring orientation; pyshp wraps decode errors in
+  its own exception type; DBF date fields are not JSON serialisable. Each was found by writing a reproduction first
+  and fixing second.
+- **Real files are messy** (uppercase extensions, `__MACOSX` junk, missing `.prj`, odd encodings), so the parsers
+  were designed around failure, not the happy path.
+- **Defence in depth for uploads:** size is enforced at the header, while streaming, and again on zip expansion;
+  filenames are never paths; XML is parsed with entity expansion off.
+- **Background work needs a story for failure.** In-process tasks vanish on restart, so the status model has to
+  survive that (startup recovery) or clients poll forever.
+- **Coverage tooling has to match the runtime**: SQLAlchemy's async layer runs on greenlets, which coverage only
+  traces when told to.
+
+## Future scope
+
+Ordered by how directly each item follows from what Aereo Cloud already does. Every item reuses the existing layers
+(parser registry, measurement service, repository), so none needs a rewrite.
+
+1. **Surveys over time and plan-vs-actual.** Aereo Cloud overlays mine design files on terrain models and compares
+   consecutive surveys; the Datamine partnership stresses real-time plan-versus-actual reconciliation.
+   *Sketch:* a `Site` that owns many versioned survey files; `GET /api/sites/{id}/compare?base=&target=` matches
+   features by a stable key (an id attribute, or spatial overlap) and returns the change in area/length plus a
+   GeoJSON diff. Both inputs are already normalised to WGS-84 and measured in a metric CRS, so the comparison is
+   like for like.
+2. **Raster inputs and volumes.** Aereo Cloud imports TIFF/MBTiles and reports cut-fill and stockpile volumes from
+   elevation models. *Sketch:* a raster parser (rasterio, Cloud Optimized GeoTIFF) registered next to the vector ones;
+   zonal statistics under a polygon; volume = sum of (surface - base plane) x cell area, where the polygons this API
+   already measures act as the stockpile boundaries.
+3. **Authentication and multi-tenancy.** The role mentions authentication, and Aereo Cloud serves different
+   personas (executives, planners, site operations). *Sketch:* OIDC/JWT, an `org_id` on every row, de-duplication
+   scoped per organisation, quotas and rate limits.
+4. **Durable processing and storage.** *Sketch:* Redis + Arq/Celery workers (retries, progress over SSE/webhooks,
+   several API replicas), S3/GCS presigned uploads for very large survey files, PostGIS for spatial filters,
+   `ST_Area(geography)` verification and vector tiles.
+5. **More formats and hand-over to other tools.** GeoJSON, GeoPackage and DXF (common with surveyors) via
+   GDAL/pyogrio; webhooks and export profiles so results can feed mine-planning software.
+6. **3D awareness for digital twins.** Z values are stored but ignored today (see limitations). *Sketch:* slope
+   length along lines, elevation profiles, and references to meshes/point clouds instead of embedding them.
+7. **Geometry QA.** Overlap/gap checks between parcels, reconciliation against recorded areas, a suggested CRS for
+   files with no `.prj`.
+8. **Observability and engineering.** Prometheus metrics, OpenTelemetry traces, JSON logs, Alembic migrations, load
+   and contract tests, a React/TypeScript + MapLibre front end.

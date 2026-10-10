@@ -322,14 +322,12 @@
       renderTable(loadedFeatures);
     }
 
-    function esc(s) {
-      if (s === null || s === undefined) return '';
-      return String(s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    // Uploaded files are untrusted: every value that ends up in innerHTML must be escaped.
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    }
+    function featureLabel(f) {
+      return (f.properties && f.properties.name) || f.feature_id;
     }
 
     function renderMapLayers(features) {
@@ -337,12 +335,15 @@
 
       const geoJsonData = {
         type: 'FeatureCollection',
-        features: features.map(f => ({
+        features: features
+          .filter(f => (f.geometry_wgs84 || f.geometry) && !['INVALID_COORDINATES', 'INVALID_GEOMETRY', 'EMPTY_GEOMETRY'].includes(f.status))
+          .map(f => ({
           type: 'Feature',
           geometry: f.geometry_wgs84 || f.geometry,
           properties: {
             ...f.properties,
             feature_id: f.feature_id,
+            label: featureLabel(f),
             geometry_type: f.geometry_type,
             formatted_measurement: f.measurement ? f.measurement.formatted : 'N/A',
             projected_crs: f.projected_crs || 'N/A',
@@ -365,7 +366,7 @@
         onEachFeature: function(feat, l) {
           l.bindPopup(`
             <div style="font-family: sans-serif; color: #0f172a;">
-              <b style="color: #0284c7;">Feature:</b> ${esc(feat.properties.feature_id)}<br/>
+              <b style="color: #0284c7;">Feature:</b> ${esc(feat.properties.label)}<br/>
               <b>Type:</b> ${esc(feat.properties.geometry_type)}<br/>
               <b>Measurement:</b> <span style="font-weight: 700; color: #059669;">${esc(feat.properties.formatted_measurement)}</span><br/>
               <b>Projection:</b> <span style="font-size: 11px;">${esc(feat.properties.projected_crs)}</span><br/>
@@ -419,13 +420,13 @@
         const dist = adv && adv.distortion_percentage !== null ? `${adv.distortion_percentage}%` : '0.00%';
 
         tr.innerHTML = `
-          <td class="px-4 py-3 font-medium text-white">${esc(f.feature_id)}</td>
-          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${esc(f.geometry_type)}</span></td>
+          <td class="px-4 py-3 font-medium text-white" title="id: ${esc(f.feature_id)}">${esc(featureLabel(f))}</td>
+          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[11px] ${badgeTypeColor}">${f.geometry_type}</span></td>
           <td class="px-4 py-3 text-slate-400 text-[11px]">${esc(f.projected_crs || 'N/A')}</td>
-          <td class="px-4 py-3 text-slate-300">${esc(f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE')}</td>
+          <td class="px-4 py-3 text-slate-300">${f.measurement ? f.measurement.measurement_type.toUpperCase() : 'NONE'}</td>
           <td class="px-4 py-3 text-emerald-400 font-bold">${esc(f.measurement ? (f.measurement.formatted || 'N/A') : 'N/A')}</td>
-          <td class="px-4 py-3 text-cyan-400">${esc(geoVal)}</td>
-          <td class="px-4 py-3 text-amber-400">${esc(dist)}</td>
+          <td class="px-4 py-3 text-cyan-400">${geoVal}</td>
+          <td class="px-4 py-3 text-amber-400">${dist}</td>
           <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-[10px] ${f.status === 'SUCCESS' ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}">${esc(f.status)}</span></td>
         `;
         tbody.appendChild(tr);

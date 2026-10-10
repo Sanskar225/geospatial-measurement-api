@@ -1,0 +1,30 @@
+[project]
+name = "geospatial-measurement-api"
+version = "2.0.0"
+description = "FastAPI service that measures area and length of features in Shapefile / KML uploads."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:.*starlette.testclient.*:UserWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+concurrency = ["greenlet", "thread"]  # SQLAlchemy's async layer runs on greenlets
+omit = ["app/static/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["B008"]  # FastAPI's Depends()/Query() defaults are idiomatic
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]  # long inline XML / data fixtures read better unwrapped
+"sample_data/*" = ["E501"]

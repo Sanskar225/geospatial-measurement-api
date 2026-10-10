@@ -1,198 +1,147 @@
-from pathlib import Path
-from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Query, status
-from fastapi.responses import PlainTextResponse
+"""REST endpoints. Handlers stay thin: parse the request, call the service, shape the response."""
 
+import re
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Path, Query, Response, UploadFile
+from fastapi.responses import StreamingResponse
+
+from app.api.deps import get_file_service
 from app.core.config import settings
-from app.core.exceptions import (
-    FileFormatError,
-    FileNotFoundCustomError,
-)
 from app.models.schemas import (
+    ErrorResponse,
+    FeatureStatus,
     FileInfoResponse,
+    GeometryType,
     MeasurementsResponse,
-    MeasurementsSummary,
 )
-from app.services.upload_storage import save_upload_stream
-from app.services.parsers.shapefile_parser import shapefile_parser
-from app.services.parsers.kml_parser import kml_parser
-from app.services.measurement_service import measurement_service
-from app.services.storage_service import storage_service
+from app.services.file_service import FileService
 
-router = APIRouter(prefix="/files", tags=["Geospatial Files"])
+router = APIRouter(prefix="/files", tags=["files"])
+
+FileId = Path(..., min_length=1, max_length=64, description="File ID returned by the upload call.")
+
+_ERR = {"model": ErrorResponse}
+UPLOAD_ERRORS = {
+    400: {**_ERR, "description": "Corrupted file or invalid content"},
+    413: {**_ERR, "description": "File larger than the configured limit"},
+    415: {**_ERR, "description": "Unsupported file type"},
+    422: {**_ERR, "description": "CRS missing/invalid, or other semantic problem"},
+}
+NOT_FOUND = {404: {**_ERR, "description": "File not found"}}
+NOT_READY = {
+    409: {**_ERR, "description": "File is still being processed"},
+    422: {**_ERR, "description": "Processing of this file failed"},
+}
+
 
 @router.post(
     "/",
     response_model=FileInfoResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload and process a geospatial file",
-    description="Accepts .zip (Shapefile), .kml, or .kmz. Performs magic byte inspection, SHA-256 deduplication, "
-                "dynamic UTM projection, and geometric metric calculations."
+    status_code=201,
+    summary="Upload a Shapefile (.zip), KML or KMZ",
+    responses={
+        200: {"model": FileInfoResponse, "description": "Identical file already processed; existing record returned"},
+        202: {"model": FileInfoResponse, "description": "Accepted for background processing (?background=true)"},
+        **UPLOAD_ERRORS,
+    },
 )
-async def upload_geospatial_file(
-    file: UploadFile = File(...),
-):
-    filename = file.filename or "unknown"
-    suffix = Path(filename).suffix.lower()
+async def upload_file(
+    response: Response,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="A .zip containing a Shapefile, or a .kml / .kmz file."),
+    background: bool = Query(
+        False,
+        description="Return immediately (202) and process in the background; poll GET /api/files/{id}/.",
+    ),
+    service: FileService = Depends(get_file_service),
+) -> FileInfoResponse:
+    """Upload, validate and process a geospatial file.
 
-    if suffix not in settings.ALLOWED_EXTENSIONS:
-        raise FileFormatError(
-            f"Unsupported file extension '{suffix}'. Supported: {', '.join(sorted(settings.ALLOWED_EXTENSIONS))}"
-        )
-
-    file_id = storage_service.generate_id()
-
-    # Stream to disk safely while enforcing size limit and verifying magic bytes
-    saved = await save_upload_stream(file, settings.UPLOAD_DIR, file_id)
-
-    # Check for deduplication (Idempotent response)
-    existing = await storage_service.find_existing_by_hash(saved.sha256)
-    if existing:
-        saved.path.unlink(missing_ok=True)
-        return existing
-
-    # Create Initial Processing Record
-    file_type = "Shapefile (.zip)" if suffix == ".zip" else ("KMZ" if suffix == ".kmz" else "KML")
-    await storage_service.create_file_record(
-        file_id=file_id,
-        filename=filename,
-        file_type=file_type,
-        file_size_bytes=saved.size,
-        file_hash=saved.sha256,
-    )
-
-    try:
-        await storage_service.update_progress(file_id, 30, status="PROCESSING")
-
-        # Parse dataset
-        if suffix == ".zip":
-            dataset = shapefile_parser.parse(saved.path)
-        elif suffix in (".kml", ".kmz"):
-            dataset = kml_parser.parse(saved.path)
-        else:
-            raise FileFormatError(f"Unhandled file extension: {suffix}")
-
-        await storage_service.update_progress(file_id, 60, status="PROCESSING")
-
-        # Process measurements
-        feature_measurements = []
-        summary = MeasurementsSummary(total_features=len(dataset.features))
-
-        for feat in dataset.features:
-            meas = measurement_service.process_feature(
-                feature_id=feat.feature_id,
-                geom=feat.geometry,
-                properties=feat.properties,
-                source_crs_str=dataset.crs,
-            )
-            feature_measurements.append(meas)
-
-            if meas.geometry_type in ("Polygon", "MultiPolygon"):
-                summary.polygon_count += 1
-                if meas.measurement and meas.measurement.value is not None:
-                    summary.total_area_sq_meters += meas.measurement.value
-            elif meas.geometry_type in ("LineString", "MultiLineString"):
-                summary.linestring_count += 1
-                if meas.measurement and meas.measurement.value is not None:
-                    summary.total_length_meters += meas.measurement.value
-            elif meas.geometry_type in ("Point", "MultiPoint"):
-                summary.point_count += 1
-            else:
-                summary.unsupported_count += 1
-
-        summary.total_area_sq_meters = round(summary.total_area_sq_meters, 2)
-        summary.total_area_hectares = round(summary.total_area_sq_meters / 10000.0, 4)
-        summary.total_length_meters = round(summary.total_length_meters, 2)
-        summary.total_length_kilometers = round(summary.total_length_meters / 1000.0, 4)
-
-        if summary.polygon_count > 0:
-            summary.average_polygon_area_sq_m = round(summary.total_area_sq_meters / summary.polygon_count, 2)
-        if summary.linestring_count > 0:
-            summary.average_linestring_length_m = round(summary.total_length_meters / summary.linestring_count, 2)
-
-        await storage_service.update_progress(file_id, 90, status="PROCESSING")
-
-        # Complete and persist record with diagnostic warnings
-        file_info = await storage_service.complete_file_processing(
-            file_id=file_id,
-            crs=dataset.crs,
-            features=feature_measurements,
-            summary=summary,
-            warnings=dataset.warnings,
-        )
-
-        return file_info
-
-    except Exception as e:
-        await storage_service.mark_file_failed(file_id, str(e))
-        raise
-
-@router.get(
-    "/{id}/",
-    response_model=FileInfoResponse,
-    summary="Get file metadata and processing status",
-    description="Returns metadata about the uploaded file including status, progress, CRS, and feature count."
-)
-async def get_file_info(id: str):
-    info = await storage_service.get_file_info(id)
-    if not info:
-        raise FileNotFoundCustomError(id)
+    By default the file is processed before the response is sent (201, status COMPLETED).
+    Use `?background=true` for large files.
+    """
+    result = await service.register_upload(file)
+    info = result.info
+    if not result.created:
+        response.status_code = 200  # idempotent: same bytes -> same record
+    elif background:
+        background_tasks.add_task(service.process, info.id, raise_errors=False)
+        response.status_code = 202
+    else:
+        await service.process(info.id)
+        info = await service.get_info(info.id)
+    response.headers["Location"] = f"{settings.API_V1_STR}/files/{info.id}/"
     return info
 
+
+@router.get("/", response_model=list[FileInfoResponse], summary="List uploaded files")
+async def list_files(
+    response: Response,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    service: FileService = Depends(get_file_service),
+) -> list[FileInfoResponse]:
+    files, total = await service.list_files(limit, offset)
+    response.headers["X-Total-Count"] = str(total)
+    return files
+
+
 @router.get(
-    "/{id}/measurements/",
+    "/{file_id}/",
+    response_model=FileInfoResponse,
+    summary="File information and processing status",
+    responses=NOT_FOUND,
+)
+async def get_file(file_id: str = FileId, service: FileService = Depends(get_file_service)) -> FileInfoResponse:
+    return await service.get_info(file_id)
+
+
+@router.get(
+    "/{file_id}/measurements/",
     response_model=MeasurementsResponse,
-    summary="Get calculated measurements for all features",
-    description="Returns area for Polygons, length for LineStrings, geodesic ground truth, and optional pagination & filtering."
+    summary="Per-feature measurements",
+    responses={**NOT_FOUND, **NOT_READY},
 )
-async def get_file_measurements(
-    id: str,
-    geometry_type: Optional[str] = Query(None, description="Filter by geometry type (e.g. 'Polygon', 'LineString', 'Point')"),
-    limit: int = Query(100, ge=1, le=1000, description="Page limit for features list"),
-    offset: int = Query(0, ge=0, description="Offset for pagination"),
-):
-    measurements = await storage_service.get_measurements(
-        file_id=id,
-        geometry_type=geometry_type,
-        limit=limit,
-        offset=offset,
+async def get_measurements(
+    file_id: str = FileId,
+    geometry_type: GeometryType | None = Query(None, description="Only features of this geometry type."),
+    status: FeatureStatus | None = Query(None, description="Only features with this status."),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    service: FileService = Depends(get_file_service),
+) -> MeasurementsResponse:
+    """Areas (polygons) and lengths (lines) in metres, plus a file-level summary.
+
+    The `summary` always covers the whole file; `features` honours the filters and pagination.
+    """
+    return await service.get_measurements(
+        file_id, geometry_type=geometry_type, status=status, limit=limit, offset=offset
     )
-    if not measurements:
-        info = await storage_service.get_file_info(id)
-        if not info:
-            raise FileNotFoundCustomError(id)
-        raise FileNotFoundCustomError(f"Measurements not available for file '{id}' (Status: {info.status})")
-    return measurements
+
 
 @router.get(
-    "/{id}/export",
-    summary="Export features and measurements",
-    description="Export features as either GeoJSON FeatureCollection or CSV tabular format."
+    "/{file_id}/export",
+    summary="Download results as GeoJSON or CSV (streamed)",
+    responses={**NOT_FOUND, **NOT_READY},
 )
-async def export_file_measurements(
-    id: str,
-    format: str = Query("geojson", pattern="^(geojson|csv)$", description="Export format ('geojson' or 'csv')")
-):
-    if format == "geojson":
-        geojson_data = await storage_service.export_geojson(id)
-        if not geojson_data:
-            raise FileNotFoundCustomError(id)
-        return geojson_data
-    elif format == "csv":
-        csv_data = await storage_service.export_csv(id)
-        if not csv_data:
-            raise FileNotFoundCustomError(id)
-        return PlainTextResponse(
-            content=csv_data,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=measurements_{id}.csv"}
-        )
+async def export_file(
+    file_id: str = FileId,
+    fmt: Literal["geojson", "csv"] = Query("geojson", alias="format"),
+    service: FileService = Depends(get_file_service),
+) -> StreamingResponse:
+    info = await service.ensure_exportable(file_id)  # raises 404/409/422 before streaming starts
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", info.filename.rsplit(".", 1)[0])[:80] or "export"
+    media_type = "application/geo+json" if fmt == "geojson" else "text/csv; charset=utf-8"
+    ext = "geojson" if fmt == "geojson" else "csv"
+    return StreamingResponse(
+        service.stream_export(file_id, fmt),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{stem}_measurements.{ext}"'},
+    )
 
-@router.get(
-    "/",
-    response_model=list[FileInfoResponse],
-    summary="List all uploaded geospatial files",
-    description="Returns a list of all processed files and their status."
-)
-async def list_files():
-    return await storage_service.list_all_files()
+
+@router.delete("/{file_id}/", status_code=204, summary="Delete a file and its results", responses=NOT_FOUND)
+async def delete_file(file_id: str = FileId, service: FileService = Depends(get_file_service)) -> Response:
+    await service.delete(file_id)
+    return Response(status_code=204)

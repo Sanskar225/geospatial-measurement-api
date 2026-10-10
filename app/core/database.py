@@ -1,43 +1,48 @@
-import os
-from pathlib import Path
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
+"""Async SQLAlchemy engine/session setup (SQLite by default, PostgreSQL-ready)."""
+
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-# Database URL - default to SQLite with aiosqlite, easily swappable to PostgreSQL
-DB_PATH = settings.DATA_DIR / "geospatial.db"
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{DB_PATH}")
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    future=True,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-)
+class Base(DeclarativeBase):
+    pass
 
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autoflush=False,
-)
 
-Base = declarative_base()
+engine = create_async_engine(settings.database_url, echo=False)
 
-async def init_db():
-    """Initializes database schema tables."""
+if engine.dialect.name == "sqlite":
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _record):  # pragma: no cover - trivial
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")  # needed for ON DELETE CASCADE
+        cursor.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+
+SessionFactory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def init_db() -> None:
+    """Create tables. (A migration tool such as Alembic would replace this in production.)"""
+    from app.models import db_models  # noqa: F401  - registers the tables on Base.metadata
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-async def get_db():
-    """Dependency that yields an async database session."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+
+async def dispose_db() -> None:
+    await engine.dispose()
+
+
+async def check_db() -> bool:
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False

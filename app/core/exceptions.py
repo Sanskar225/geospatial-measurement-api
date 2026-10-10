@@ -1,75 +1,100 @@
-from typing import Any, Dict, Optional
-from fastapi import HTTPException, status
+"""Domain exceptions.
+
+These are plain Python exceptions on purpose: the geospatial/domain layer must not
+know about HTTP. ``app/api/errors.py`` maps them to JSON responses using the
+``status_code`` / ``error_code`` attributes declared here.
+"""
+
+from typing import Any
+
 
 class AppError(Exception):
-    """Base domain exception with status_code, message, error_code, and extra metadata."""
-    def __init__(
-        self,
-        message: str,
-        status_code: int = status.HTTP_400_BAD_REQUEST,
-        error_code: str = "BAD_REQUEST",
-        file_id: Optional[str] = None,
-        extra: Optional[Dict[str, Any]] = None,
-    ):
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-        self.error_code = error_code
-        self.file_id = file_id
-        self.extra = extra or {}
-        if file_id:
-            self.extra["file_id"] = file_id
+    """Base class for every error we raise deliberately."""
+
+    status_code: int = 500
+    error_code: str = "INTERNAL_ERROR"
+    default_message: str = "An unexpected error occurred."
+
+    def __init__(self, message: str | None = None, **extra: Any) -> None:
+        self.message = message or self.default_message
+        self.extra = extra
+        super().__init__(self.message)
+
+
+# --- input problems (4xx) -----------------------------------------------------
+class UnsupportedFileTypeError(AppError):
+    status_code = 415
+    error_code = "UNSUPPORTED_FILE_TYPE"
+    default_message = "Unsupported file type."
+
 
 class FileFormatError(AppError):
-    def __init__(self, detail: str = "Invalid or corrupted geospatial file.", file_id: Optional[str] = None):
-        super().__init__(
-            message=detail,
-            status_code=status.HTTP_400_BAD_REQUEST,
-            error_code="INVALID_FILE_FORMAT",
-            file_id=file_id,
-        )
+    status_code = 400
+    error_code = "INVALID_FILE"
+    default_message = "Invalid or corrupted geospatial file."
+
 
 class FileTooLargeError(AppError):
-    def __init__(self, detail: str = "Uploaded file exceeds maximum allowed size.", file_id: Optional[str] = None):
+    status_code = 413
+    error_code = "FILE_TOO_LARGE"
+    default_message = "The uploaded file exceeds the configured size limit."
+
+
+class CRSError(AppError):
+    status_code = 422
+    error_code = "CRS_ERROR"
+    default_message = "Coordinate reference system problem."
+
+
+class MissingCRSError(CRSError):
+    error_code = "CRS_MISSING"
+
+
+class InvalidCRSError(CRSError):
+    error_code = "CRS_INVALID"
+
+
+class CRSTransformationError(CRSError):
+    error_code = "CRS_TRANSFORMATION_FAILED"
+
+
+class InvalidCoordinatesError(CRSError):
+    """Coordinates are outside the valid range for the declared CRS."""
+
+    error_code = "COORDINATES_INVALID"
+
+
+# --- resource state ---------------------------------------------------------
+class FileRecordNotFoundError(AppError):
+    status_code = 404
+    error_code = "FILE_NOT_FOUND"
+
+    def __init__(self, file_id: str) -> None:
+        super().__init__(f"Geospatial file with ID '{file_id}' was not found.", file_id=file_id)
+
+
+class FileNotReadyError(AppError):
+    status_code = 409
+    error_code = "FILE_NOT_READY"
+
+    def __init__(self, file_id: str, status: str) -> None:
         super().__init__(
-            message=detail,
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            error_code="FILE_TOO_LARGE",
+            f"File '{file_id}' is still {status.lower()}; poll GET /api/files/{file_id}/ "
+            "until its status is COMPLETED.",
             file_id=file_id,
         )
 
-class FileNotFoundCustomError(AppError):
-    def __init__(self, file_id: str):
-        super().__init__(
-            message=f"Geospatial file with ID '{file_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            error_code="FILE_NOT_FOUND",
-            file_id=file_id,
-        )
 
-class MissingCRSError(AppError):
-    def __init__(self, detail: str = "Missing CRS definition and coordinates are not valid lon/lat.", file_id: Optional[str] = None):
-        super().__init__(
-            message=detail,
-            status_code=422,
-            error_code="CRS_MISSING",
-            file_id=file_id,
-        )
+class FileProcessingFailedError(AppError):
+    status_code = 422
+    error_code = "FILE_PROCESSING_FAILED"
 
-class CRSTransformationError(AppError):
-    def __init__(self, detail: str = "Failed to transform coordinates to projected CRS.", file_id: Optional[str] = None):
-        super().__init__(
-            message=detail,
-            status_code=422,
-            error_code="CRS_TRANSFORMATION_ERROR",
-            file_id=file_id,
-        )
+    def __init__(self, file_id: str, reason: str | None) -> None:
+        super().__init__(f"Processing of file '{file_id}' failed: {reason or 'unknown error'}", file_id=file_id)
 
-class InvalidCoordinatesError(AppError):
-    def __init__(self, detail: str = "Geometry coordinates are outside valid bounds.", file_id: Optional[str] = None):
-        super().__init__(
-            message=detail,
-            status_code=422,
-            error_code="INVALID_COORDINATES",
-            file_id=file_id,
-        )
+
+# --- server problems (5xx) --------------------------------------------------
+class ProcessingError(AppError):
+    status_code = 500
+    error_code = "PROCESSING_ERROR"
+    default_message = "Unexpected error while processing the file."

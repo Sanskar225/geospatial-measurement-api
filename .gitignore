@@ -1,46 +1,19 @@
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environment
 .venv/
-env/
 venv/
-ENV/
-
-# Pytest / Coverage
+.env
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
-# Application storage & temp uploads
-uploads/*
-!uploads/.gitkeep
+# runtime data
 data_store/*
 !data_store/.gitkeep
-
-# IDE & OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-*.swp
+uploads/*
+!uploads/.gitkeep
+*.db
+*.db-wal
+*.db-shm

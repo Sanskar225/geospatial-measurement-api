@@ -1,102 +1,102 @@
+"""Pure formatting helpers for the export endpoint (no I/O, easy to unit test)."""
+
 import csv
 import io
-from typing import List, Dict, Any
-from app.models.schemas import FeatureMeasurement, MeasurementsResponse
+import json
+from collections.abc import AsyncIterator, Iterable
 
-_DANGEROUS_CSV_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+from app.models.schemas import FeatureMeasurement
 
-def sanitize_csv_cell(value: Any) -> str:
-    """Protects against CSV Formula Injection when opened in Excel / Google Sheets."""
-    if value is None:
-        return ""
-    text = str(value)
-    if text and text[0] in _DANGEROUS_CSV_PREFIXES:
-        return "'" + text
-    return text
+CSV_COLUMNS = [
+    "index",
+    "feature_id",
+    "name",
+    "geometry_type",
+    "status",
+    "measurement_type",
+    "value",
+    "unit",
+    "perimeter_m",
+    "geodesic_value",
+    "difference_pct",
+    "source_crs",
+    "projected_crs",
+    "notes",
+]
 
-def format_measurements_as_csv(response: MeasurementsResponse) -> str:
-    """Formats features and measurements as a CSV table with formula injection defense."""
-    output = io.StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL)
+# Characters that make Excel/LibreOffice treat a cell as a formula (CSV injection).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
-    # Header
-    writer.writerow([
-        "index",
-        "feature_id",
-        "name",
-        "geometry_type",
-        "status",
-        "measurement_type",
-        "value",
-        "unit",
-        "formatted",
-        "perimeter_m",
-        "geodesic_value",
-        "difference_pct",
-        "source_crs",
-        "projected_crs",
-        "notes"
-    ])
 
-    for idx, f in enumerate(response.features):
-        m = f.measurement
-        adv = m.advanced_metrics if m else None
-        
-        feature_name = f.properties.get("name") or f.properties.get("NAME") or ""
-        val = m.value if m and m.value is not None else ""
-        unit = m.unit.value if m else "none"
-        fmt = m.formatted if m else "N/A"
-        perim = adv.perimeter_meters if adv and adv.perimeter_meters is not None else ""
-        geo_val = adv.geodesic_value if adv and adv.geodesic_value is not None else ""
-        diff_pct = adv.distortion_percentage if adv and adv.distortion_percentage is not None else ""
-        notes = f.notes or ""
+def csv_safe(value: object) -> object:
+    """Neutralise spreadsheet formulas in *text* cells; numbers pass through untouched."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
 
-        writer.writerow([
-            idx,
-            sanitize_csv_cell(f.feature_id),
-            sanitize_csv_cell(feature_name),
-            f.geometry_type,
-            f.status,
-            m.measurement_type if m else "none",
-            val,
-            unit,
-            sanitize_csv_cell(fmt),
-            perim,
-            geo_val,
-            diff_pct,
-            f.crs,
-            f.projected_crs or "",
-            sanitize_csv_cell(notes),
-        ])
 
-    return output.getvalue()
+def feature_to_csv_row(feature: FeatureMeasurement) -> list[object]:
+    m = feature.measurement
+    metrics = m.advanced_metrics if m else None
+    return [
+        feature.index,
+        csv_safe(feature.feature_id),
+        csv_safe(str(feature.properties.get("name", "") or "")),
+        feature.geometry_type,
+        feature.status.value,
+        m.measurement_type.value if m else "",
+        m.value if m and m.value is not None else "",
+        m.unit.value if m else "",
+        metrics.perimeter_meters if metrics and metrics.perimeter_meters is not None else "",
+        metrics.geodesic_value if metrics and metrics.geodesic_value is not None else "",
+        metrics.distortion_percentage if metrics and metrics.distortion_percentage is not None else "",
+        feature.crs,
+        feature.projected_crs or "",
+        csv_safe(" | ".join(feature.notes)),
+    ]
 
-def format_features_as_geojson(response: MeasurementsResponse) -> Dict[str, Any]:
-    """Formats features into RFC 7946 compliant GeoJSON FeatureCollection."""
-    features = []
-    for f in response.features:
-        # Use geometry_wgs84 for RFC 7946 WGS-84 compliance if available, else native geometry
-        geom = f.geometry_wgs84 if getattr(f, "geometry_wgs84", None) else f.geometry
-        features.append({
-            "type": "Feature",
-            "id": f.feature_id,
-            "geometry": geom,
-            "properties": {
-                **f.properties,
-                "feature_id": f.feature_id,
-                "geometry_type": f.geometry_type,
-                "source_crs": f.crs,
-                "projected_crs": f.projected_crs,
-                "measurement_type": f.measurement.measurement_type if f.measurement else "none",
-                "measurement_value": f.measurement.value if f.measurement else None,
-                "measurement_unit": f.measurement.unit.value if f.measurement else "none",
-                "formatted_measurement": f.measurement.formatted if f.measurement else "N/A",
-                "status": f.status,
-            }
-        })
 
-    return {
-        "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-        "features": features
+def feature_to_geojson(feature: FeatureMeasurement) -> dict:
+    """RFC 7946 Feature: geometry is always lon/lat WGS-84; measurements ride along as properties."""
+    m = feature.measurement
+    metrics = m.advanced_metrics if m else None
+    properties = {
+        **feature.properties,
+        "feature_id": feature.feature_id,
+        "feature_status": feature.status.value,
+        "source_crs": feature.crs,
+        "projected_crs": feature.projected_crs,
+        "measure_type": m.measurement_type.value if m else None,
+        "measure_value": m.value if m else None,
+        "measure_unit": m.unit.value if m else None,
+        "measure_geodesic": metrics.geodesic_value if metrics else None,
+        "measure_difference_pct": metrics.distortion_percentage if metrics else None,
     }
+    return {
+        "type": "Feature",
+        "id": feature.index,
+        "geometry": feature.geometry_wgs84 or feature.geometry,
+        "properties": properties,
+    }
+
+
+async def stream_geojson(batches: AsyncIterator[list[FeatureMeasurement]]) -> AsyncIterator[str]:
+    yield '{"type":"FeatureCollection","features":['
+    first = True
+    async for batch in batches:
+        chunk = ",".join(json.dumps(feature_to_geojson(f)) for f in batch)
+        yield chunk if first else "," + chunk
+        first = False
+    yield "]}"
+
+
+def _csv_chunk(rows: Iterable[list[object]]) -> str:
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\n").writerows(rows)
+    return buffer.getvalue()
+
+
+async def stream_csv(batches: AsyncIterator[list[FeatureMeasurement]]) -> AsyncIterator[str]:
+    yield _csv_chunk([CSV_COLUMNS])
+    async for batch in batches:
+        yield _csv_chunk(feature_to_csv_row(f) for f in batch)

@@ -1,201 +1,95 @@
-import os
-import zipfile
-from pathlib import Path
-import shapefile
+"""Regenerates the binary sample files in this folder.
 
-SAMPLE_DIR = Path(__file__).parent
-SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
+    python sample_data/generate_samples.py
 
-# 1. Generate KML Sample
-kml_content = """<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>Aereo Bengaluru Drone Survey Mission</name>
-    <description>Drone orthomosaic survey boundary, flight path, and ground control points</description>
-    
-    <!-- Polygon: Solar Plant / Survey Site Boundary -->
-    <Placemark>
-      <name>Solar Plant Sector A</name>
-      <description>Perimeter boundary for solar farm site</description>
-      <ExtendedData>
-        <Data name="Project">
-          <value>Aereo CleanEnergy Phase 1</value>
-        </Data>
-        <Data name="SurveyDate">
-          <value>2026-10-08</value>
-        </Data>
-      </ExtendedData>
-      <Polygon>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>
-              77.5850,12.9700,0
-              77.5950,12.9700,0
-              77.5950,12.9800,0
-              77.5850,12.9800,0
-              77.5850,12.9700,0
-            </coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-      </Polygon>
-    </Placemark>
-
-    <!-- LineString: Power Line / Road Corridor Alignment -->
-    <Placemark>
-      <name>Transmission Line Corridor</name>
-      <description>High voltage transmission line survey corridor</description>
-      <ExtendedData>
-        <Data name="Voltage">
-          <value>66kV</value>
-        </Data>
-      </ExtendedData>
-      <LineString>
-        <coordinates>
-          77.5800,12.9650,0
-          77.5860,12.9720,0
-          77.5920,12.9780,0
-          77.6000,12.9850,0
-        </coordinates>
-      </LineString>
-    </Placemark>
-
-    <!-- Point: Ground Control Point (GCP) -->
-    <Placemark>
-      <name>GCP Base Station #1</name>
-      <description>RTK Base station location</description>
-      <Point>
-        <coordinates>77.5900,12.9750,920.5</coordinates>
-      </Point>
-    </Placemark>
-
-    <!-- Polygon with an Interior Hole (Quarry Ring) -->
-    <Placemark>
-      <name>Mining Pit Exclusion Zone</name>
-      <description>Mining pit buffer with interior extraction hole</description>
-      <Polygon>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>
-              77.6000,12.9600,0
-              77.6150,12.9600,0
-              77.6150,12.9750,0
-              77.6000,12.9750,0
-              77.6000,12.9600,0
-            </coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-        <innerBoundaryIs>
-          <LinearRing>
-            <coordinates>
-              77.6040,12.9640,0
-              77.6100,12.9640,0
-              77.6100,12.9700,0
-              77.6040,12.9700,0
-              77.6040,12.9640,0
-            </coordinates>
-          </LinearRing>
-        </innerBoundaryIs>
-      </Polygon>
-    </Placemark>
-
-  </Document>
-</kml>
+* sample_shapefile.zip     - 2 parcels in EPSG:4326 (with .prj)
+* sample_utm_shapefile.zip - parcels in EPSG:32643 (UTM 43N, metres): shows that projected
+                             inputs are handled and re-projected for the map
+* survey_sample.kml        - hand-written, committed as text
 """
 
-with open(SAMPLE_DIR / "survey_sample.kml", "w", encoding="utf-8") as f:
-    f.write(kml_content)
+import tempfile
+import zipfile
+from pathlib import Path
 
-print("Created survey_sample.kml")
+import shapefile
+from pyproj import CRS, Transformer
+from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient
 
-# 2. Generate Sample Shapefile (.zip)
-shp_base_name = "sample_survey_cadastre"
-shp_temp_dir = SAMPLE_DIR / "temp_shp"
-shp_temp_dir.mkdir(exist_ok=True)
+SAMPLE_DIR = Path(__file__).parent
 
-# Create Polygon Shapefile using pyshp
-w = shapefile.Writer(str(shp_temp_dir / shp_base_name), shapeType=shapefile.POLYGON)
-w.field("NAME", "C", size=50)
-w.field("LAND_USE", "C", size=30)
-w.field("PARCEL_ID", "N", size=10)
 
-# Feature 1: Industrial Parcel
-w.poly([
-    [
-        [77.50, 13.00],
-        [77.52, 13.00],
-        [77.52, 13.02],
-        [77.50, 13.02],
-        [77.50, 13.00]
+def _clockwise(coords):
+    """ESRI shapefiles store exterior rings clockwise."""
+    return list(orient(Polygon(coords), sign=-1.0).exterior.coords)
+
+
+def _zip_shapefile(base: Path, zip_path: Path) -> None:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for ext in ("shp", "shx", "dbf", "prj", "cpg"):
+            part = base.with_suffix(f".{ext}")
+            if part.exists():
+                archive.write(part, arcname=part.name)
+
+
+def make_geographic_sample() -> None:
+    parcels = [
+        (
+            "Industrial Park Alpha",
+            "Commercial",
+            101,
+            [(77.5800, 12.9500), (77.5900, 12.9500), (77.5900, 12.9600), (77.5800, 12.9600)],
+        ),
+        (
+            "Agri Zone Beta",
+            "Agricultural",
+            102,
+            [(77.6000, 12.9000), (77.6200, 12.9000), (77.6200, 12.9200), (77.6000, 12.9200)],
+        ),
     ]
-])
-w.record("Industrial Park Alpha", "Commercial", 101)
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "bengaluru_parcels"
+        with shapefile.Writer(str(base), shapeType=shapefile.POLYGON) as writer:
+            writer.field("NAME", "C", 40)
+            writer.field("LAND_USE", "C", 20)
+            writer.field("PARCEL_ID", "N", 10)
+            for name, use, pid, ring in parcels:
+                writer.poly([_clockwise(ring + [ring[0]])])
+                writer.record(name, use, pid)
+        base.with_suffix(".prj").write_text(CRS.from_epsg(4326).to_wkt(version="WKT1_ESRI"))
+        base.with_suffix(".cpg").write_text("UTF-8")
+        _zip_shapefile(base, SAMPLE_DIR / "sample_shapefile.zip")
 
-# Feature 2: Agricultural Parcel
-w.poly([
-    [
-        [77.53, 13.03],
-        [77.55, 13.03],
-        [77.55, 13.05],
-        [77.53, 13.05],
-        [77.53, 13.03]
+
+def make_utm_sample() -> None:
+    to_utm = Transformer.from_crs(4326, 32643, always_xy=True)
+    parcels = [
+        (
+            "Stockpile Yard 1",
+            "Mining",
+            [(77.5800, 12.9500), (77.5850, 12.9500), (77.5850, 12.9540), (77.5800, 12.9540)],
+        ),
+        (
+            "Stockpile Yard 2",
+            "Mining",
+            [(77.5900, 12.9500), (77.5960, 12.9500), (77.5960, 12.9550), (77.5900, 12.9550)],
+        ),
     ]
-])
-w.record("Agri Zone Beta", "Agricultural", 102)
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "utm_site"
+        with shapefile.Writer(str(base), shapeType=shapefile.POLYGON) as writer:
+            writer.field("NAME", "C", 40)
+            writer.field("CATEGORY", "C", 20)
+            for name, category, ring in parcels:
+                projected = [to_utm.transform(x, y) for x, y in ring + [ring[0]]]
+                writer.poly([_clockwise(projected)])
+                writer.record(name, category)
+        base.with_suffix(".prj").write_text(CRS.from_epsg(32643).to_wkt(version="WKT1_ESRI"))
+        _zip_shapefile(base, SAMPLE_DIR / "sample_utm_shapefile.zip")
 
-w.close()
 
-# Write WGS 84 .prj file (Standard EPSG:4326 WKT)
-prj_wkt = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
-with open(shp_temp_dir / f"{shp_base_name}.prj", "w", encoding="utf-8") as f:
-    f.write(prj_wkt)
-
-# Pack into zip file
-zip_path = SAMPLE_DIR / "sample_shapefile.zip"
-with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_out:
-    for ext in [".shp", ".shx", ".dbf", ".prj"]:
-        file_to_pack = shp_temp_dir / f"{shp_base_name}{ext}"
-        if file_to_pack.exists():
-            zip_out.write(file_to_pack, arcname=f"{shp_base_name}{ext}")
-
-# Clean up temp files
-import shutil
-shutil.rmtree(shp_temp_dir)
-print("Created sample_shapefile.zip")
-
-# 3. Generate Sample UTM Projected Shapefile (.zip) - EPSG:32643 (UTM 43N)
-utm_base_name = "sample_utm_cadastre"
-utm_temp_dir = SAMPLE_DIR / "temp_utm_shp"
-utm_temp_dir.mkdir(exist_ok=True)
-
-w_utm = shapefile.Writer(str(utm_temp_dir / utm_base_name), shapeType=shapefile.POLYGON)
-w_utm.field("NAME", "C", size=50)
-w_utm.field("SECTOR", "C", size=30)
-
-# Feature 1: Stockpile Yard 1 (coordinates in meters)
-w_utm.poly([
-    [
-        [500000.0, 1435000.0],
-        [500500.0, 1435000.0],
-        [500500.0, 1435500.0],
-        [500000.0, 1435500.0],
-        [500000.0, 1435000.0]
-    ]
-])
-w_utm.record("Stockpile Yard 1", "Mining Pit A")
-
-w_utm.close()
-
-# Write UTM Zone 43N .prj WKT
-utm_prj_wkt = 'PROJCS["WGS_1984_UTM_Zone_43N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",75.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]'
-with open(utm_temp_dir / f"{utm_base_name}.prj", "w", encoding="utf-8") as f:
-    f.write(utm_prj_wkt)
-
-utm_zip_path = SAMPLE_DIR / "sample_utm_shapefile.zip"
-with zipfile.ZipFile(utm_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_out:
-    for ext in [".shp", ".shx", ".dbf", ".prj"]:
-        file_to_pack = utm_temp_dir / f"{utm_base_name}{ext}"
-        if file_to_pack.exists():
-            zip_out.write(file_to_pack, arcname=f"{utm_base_name}{ext}")
-
-shutil.rmtree(utm_temp_dir)
-print("Created sample_utm_shapefile.zip")
+if __name__ == "__main__":
+    make_geographic_sample()
+    make_utm_sample()
+    print("Generated sample_shapefile.zip and sample_utm_shapefile.zip in", SAMPLE_DIR)
