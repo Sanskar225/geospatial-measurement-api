@@ -18,7 +18,11 @@ a geodesic calculation on the WGS-84 ellipsoid and the difference is reported.
 - Large files can be processed in the background (`?background=true`) and polled.
 - 189 automated tests (97 % line coverage), lint/format checks and CI.
 - A small map dashboard at `/` for trying it out.
-- **Enterprise Engineering Docs**: Detailed [Functional Requirements Document (FRD)](docs/FRD.md) and [MVP Specification & Architecture (MVP)](docs/MVP.md).
+- **Enterprise Engineering Docs**:
+  - 📋 [Functional Requirements Document (FRD)](docs/FRD.md)
+  - 🚀 [Minimum Viable Product Architecture (MVP)](docs/MVP.md)
+  - 🏛️ [System Architecture & Trade-Offs (ARCHITECTURE.md)](docs/ARCHITECTURE.md)
+  - 📊 [Candidate Evaluation & Verification Report (EVALUATION_REPORT.md)](docs/EVALUATION_REPORT.md)
 - A short note on [how this lines up with Aereo Cloud](#how-this-maps-to-aereo-cloud) and what I would build next.
 
 ---
